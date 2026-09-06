@@ -1,0 +1,31 @@
+# Default hotel/OTA sites checked for every search, India-first.
+# Hand-maintained — same discipline as category_sites.yaml.
+version: 1
+
+sites:
+  - name: Google Hotels
+    domain: google.com/travel/hotels
+    kind: aggregator
+    notes: >
+      Fastest single check across many OTAs and often surfaces the hotel's
+      own site too, but doesn't always show the true lowest fenced rate —
+      still check the named OTAs directly.
+  - name: MakeMyTrip
+    domain: makemytrip.com
+    kind: ota
+  - name: Booking.com
+    domain: booking.com
+    kind: ota
+  - name: Agoda
+    domain: agoda.com
+    kind: ota
+  - name: Goibibo
+    domain: goibibo.com
+    kind: ota
+
+on_user_supplied_links: >
+  If the user gives direct links (e.g. a specific Booking.com or MakeMyTrip
+  hotel page), check those exact links first — they name the property the
+  user actually wants. Then fill remaining slots for the same hotel and
+  dates from the default site list above. Never substitute a different,
+  similarly-named property.

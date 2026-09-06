@@ -1,0 +1,138 @@
+# Top sites to check per product category, India-first.
+# Hand-maintained: add/remove sites here deliberately, don't let a skill
+# invent a new one mid-search without adding it here first.
+#
+# Matching: look at the product's breadcrumbs/title/URL for match_keywords
+# (case-insensitive substring match) to pick a category. First category that
+# matches wins; if none match, use `general`.
+version: 1
+
+categories:
+  electronics:
+    match_keywords:
+      - mobile
+      - smartphone
+      - laptop
+      - tv
+      - television
+      - camera
+      - headphone
+      - earbud
+      - earphone
+      - smartwatch
+      - tablet
+      - speaker
+      - gaming
+      - console
+      - monitor
+      - refrigerator
+      - washing machine
+      - air conditioner
+      - " ac "
+      - microwave
+      - processor
+      - graphics card
+    sites:
+      - amazon.in
+      - flipkart.com
+      - croma.com
+      - reliancedigital.in
+      - tatacliq.com
+
+  clothing_fashion:
+    match_keywords:
+      - shirt
+      - t-shirt
+      - tshirt
+      - jeans
+      - dress
+      - kurta
+      - kurti
+      - saree
+      - jacket
+      - ethnic wear
+      - western wear
+      - apparel
+      - trousers
+      - co-ord
+    sites:
+      - myntra.com
+      - ajio.com
+      - amazon.in
+      - flipkart.com
+      - tatacliq.com
+
+  footwear:
+    match_keywords:
+      - shoes
+      - sneaker
+      - sandal
+      - heels
+      - boots
+      - slippers
+      - footwear
+      - flip flop
+    sites:
+      - myntra.com
+      - ajio.com
+      - amazon.in
+      - flipkart.com
+      - nykaafashion.com
+
+  cosmetics_beauty:
+    match_keywords:
+      - makeup
+      - lipstick
+      - skincare
+      - serum
+      - moisturizer
+      - sunscreen
+      - perfume
+      - fragrance
+      - shampoo
+      - conditioner
+      - haircare
+      - cosmetic
+      - foundation
+      - concealer
+    sites:
+      - nykaa.com
+      - amazon.in
+      - purplle.com
+      - myntra.com
+      - flipkart.com
+
+  home_furniture:
+    match_keywords:
+      - sofa
+      - furniture
+      - mattress
+      - home decor
+      - cookware
+      - bedsheet
+      - curtain
+      - dining table
+      - wardrobe
+      - kitchen appliance
+    sites:
+      - amazon.in
+      - flipkart.com
+      - pepperfry.com
+      - urbanladder.com
+      - tatacliq.com
+
+  # Fallback when nothing above matches. Keep this last.
+  general:
+    match_keywords: []
+    sites:
+      - amazon.in
+      - flipkart.com
+      - tatacliq.com
+      - myntra.com
+      - snapdeal.com
+
+# Third-party price-history sites to consult for the graph + high/avg/low.
+# Try them in order; use whichever returns a match for the product.
+price_history_sources:
+  - pricehistory.app
+  - buyhatke.com

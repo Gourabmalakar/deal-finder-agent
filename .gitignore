@@ -1,0 +1,6 @@
+# Scratch space for screenshots captured during a session — not committed,
+# but kept on disk between calls within a session. Clean up periodically.
+runs/*
+!runs/.gitkeep
+
+.DS_Store
