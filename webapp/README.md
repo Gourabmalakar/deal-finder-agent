@@ -95,21 +95,41 @@ that's `127.0.0.1`, which a cloud job can never see.
 
 ## Known limitations (read before trusting a result)
 
-Full detail and repro steps in `../docs/TESTING.md`; in short:
+Full detail and repro steps in `../docs/TESTING.md` (Round 2 — real bugs
+found from actual use, not just this project's own testing); in short:
 
-- **Still mostly a generic heuristic**, with real fixes for the failure
-  modes actually observed live (Amazon's own selector; filter/sort/budget-
-  range chrome denylisted). It can still grab the *wrong one of two real
-  prices* on a listing that shows both an original and a discounted price
-  in the same snippet — confirmed on a Booking.com result. **Always click
-  through and confirm before buying**, which is why every result carries
-  that note.
+- **A result must now name the specific product/hotel searched for**
+  (shares its distinctive words, including the brand/property name) or it
+  won't be reported at all — since fixing this, "wrong item/property
+  entirely" mostly won't happen anymore, but it does mean more sites come
+  back `no_match` (correctly declining, not guessing) than before. A bare
+  city name (no specific hotel) skips this check.
+- **Still can grab the *wrong one of two real prices*** on a listing that
+  shows both an original and a discounted price in the same snippet —
+  confirmed on a Booking.com result. **Always click through and confirm
+  before buying**, which is why every result carries that note.
+- **Amazon leads with sponsored ads for other brands** before your
+  brand's own listings (confirmed live) — the extractor now scans every
+  card for a real match rather than assuming the first one is right, but
+  a brand with very few listings on a given search could still come back
+  `no_match` if none of the loaded cards happen to name it.
 - **myntra.com, nykaa.com, makemytrip.com, and goibibo.com consistently
   reject headless-browser connections** at the network level
   (`ERR_HTTP2_PROTOCOL_ERROR`) — confirmed by direct reproduction, not a
-  one-off. Reported as `error`, never retried with evasion. croma.com,
-  ajio.com, and agoda.com show a detectable bot-check intermittently
-  (reported as `blocked`).
+  one-off. Reported as `error`, never retried with evasion. croma.com and
+  ajio.com show a detectable bot-check intermittently (reported as
+  `blocked`) — genuinely, not the false-positive below.
+- **Agoda's URL template doesn't actually pre-fill its search** — it
+  lands on Agoda's plain homepage with an empty destination box
+  (confirmed via screenshot), so it correctly reports `no_match` rather
+  than a wrong rate, but won't return a real Agoda price until that
+  template is fixed.
+- Fixed this round, noted so it isn't mistaken for still-open: raw-HTML
+  "blocked" detection used to false-positive on any page merely embedding
+  Google's reCAPTCHA widget (its script URL contains "recaptcha", which
+  contains "captcha") — a normal, fully-loaded page with a real answer
+  (e.g. "not available for these dates") was getting mislabeled
+  `blocked`. Now checks visible text for actual block phrasing.
 - **Hotel site URL templates are approximate** except Booking.com, which
   supports dates/guests as real query parameters. The others may not filter
   by your exact dates — verify on the linked page. Google Hotels results

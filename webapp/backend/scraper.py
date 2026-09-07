@@ -52,14 +52,23 @@ def _clean_price(raw: str) -> float | None:
         return None
 
 
-def _extract_amazon_result(html: str) -> tuple[float | None, str | None, str | None]:
+def _extract_amazon_result(html: str, title_hint: str | None = None,
+                             hint_stopwords: set[str] = frozenset(),
+                             require_hint_match: bool = False,
+                             ) -> tuple[float | None, str | None, str | None]:
     """Amazon's search-result markup (data-component-type="s-search-result")
     has been stable for years, and the generic heuristic below reliably
     grabbed the wrong number on amazon.in in testing (a nav/promo "under
     ₹500" link, not the listing price) — worth a real selector for the
     single most important site in the list, unlike the rest which stay
-    generic."""
+    generic. Scans EVERY card rather than just the first: real Amazon
+    results routinely lead with 1-3 sponsored ads for a *different* brand
+    entirely (confirmed live: searching "boAt Airdopes 141" surfaced Noise
+    and GOBOULT ads before any boAt listing) — taking the first card
+    unconditionally would report a competitor's price as if it were the
+    searched-for product."""
     soup = BeautifulSoup(html, "html.parser")
+    candidates: list[tuple[float, str | None, str | None]] = []
     for card in soup.select('div[data-component-type="s-search-result"]'):
         price_el = card.select_one("span.a-price span.a-offscreen") or card.select_one("span.a-price-whole")
         if not price_el:
@@ -70,24 +79,147 @@ def _extract_amazon_result(html: str) -> tuple[float | None, str | None, str | N
         price = _clean_price(m.group(1))
         if price is None:
             continue
-        title_el = card.select_one("h2 a span") or card.select_one("h2 span")
-        link_el = card.select_one("h2 a") or card.select_one("a.a-link-normal")
-        return price, (link_el.get("href") if link_el else None), \
-            (title_el.get_text(strip=True) if title_el else None)
-    return None, None, None
+        # h2's own text can be just the brand name alone on some card
+        # layouts (confirmed live: a real boAt result's <h2> contained only
+        # "boAt", nothing else — every hint-word check then failed even
+        # though it was the right product). The product image's alt text
+        # reliably carries the FULL descriptive title regardless of card
+        # layout, so prefer that; fall back to h2 for the rare card with
+        # no image alt.
+        img_el = card.select_one("img[alt]")
+        title = img_el.get("alt") if img_el else None
+        if not title:
+            title_el = card.select_one("h2 a span") or card.select_one("h2 span")
+            title = title_el.get_text(strip=True) if title_el else None
+        # Prefer a real product-page link (contains "/dp/") over h2's own
+        # anchor, which can be empty on the same card layout.
+        link_el = card.select_one('a.a-link-normal[href*="/dp/"]') or card.select_one("h2 a") \
+            or card.select_one("a.a-link-normal")
+        link = link_el.get("href") if link_el else None
+        candidates.append((price, link, title))
+
+    if not candidates:
+        return None, None, None
+    if require_hint_match and title_hint:
+        matched = [c for c in candidates if _title_matches(c[2], title_hint, hint_stopwords)]
+        if not matched:
+            return None, None, None
+        return min(matched, key=lambda c: c[0])
+    return candidates[0]
 
 
-def _extract_top_price_and_link(html: str, base_url: str,
-                                  domain: str | None = None) -> tuple[float | None, str | None, str | None]:
-    """Generic heuristic: scan the DOM in document order, return the
-    first ₹ price found together with the nearest enclosing/preceding <a>
-    link and a short text snippet as a stand-in "title". Good enough for a
-    demo, not a substitute for the real per-site verification the
-    ecommerce-deal-finder skill does with a live browser. Amazon gets a
-    tuned selector instead (see _extract_amazon_result) since it's the
-    single most-checked site and the generic heuristic misfired on it."""
+_HOTEL_STOPWORDS = {"hotel", "hotels", "resort", "the", "inn", "suites", "and", "a", "an"}
+_HOTEL_NAME_HINTS = ("hotel", "resort", "inn", "suites", "villa", "palace", "residency")
+_PRODUCT_STOPWORDS = {"buy", "online", "best", "price", "for", "with", "the", "and",
+                       "in", "india", "at", "shop", "shopping", "a", "an"}
+
+
+def _looks_like_specific_hotel(place: str) -> bool:
+    """Distinguish "find any hotel in this city" (place = a bare city name)
+    from "find this specific property" (a multi-word name, or one
+    containing a hotel-ish word) — only the latter should require the
+    result to actually name that property."""
+    words = place.strip().split()
+    if len(words) >= 3:
+        return True
+    return any(h in place.lower() for h in _HOTEL_NAME_HINTS)
+
+
+def _title_matches(title: str | None, hint: str, stopwords: set[str] = frozenset()) -> bool:
+    """Does this candidate's title plausibly refer to `hint` (a product
+    name or a specific hotel)? Requires at least half of the hint's
+    distinctive (len>2, non-stopword) words to appear in the title —
+    catches "this is a totally different item/property" mismatches
+    without demanding an exact string match."""
+    if not title:
+        return False
+    # Strip punctuation entirely before comparing — confirmed live, a
+    # query for "Levis" was rejected against a real "LEVI'S" listing
+    # because the literal substring "levis" doesn't appear in "levi's"
+    # (the apostrophe breaks it). Squashing both sides the same way
+    # ("levi's" -> "levis") fixes this without losing real discrimination.
+    title_l = re.sub(r"[^a-z0-9]", "", title.lower())
+    hint_words = [w for w in re.findall(r"[a-zA-Z0-9]+", hint.lower())
+                  if len(w) > 2 and w not in stopwords]
+    if not hint_words:
+        return True  # nothing distinctive to check against (e.g. a bare city name)
+    matches = sum(1 for w in hint_words if w in title_l)
+    # Cap the bar at 4 matching words — a long, SEO-stuffed title (common
+    # on Amazon: 20+ words of attributes) shouldn't need HALF of them to
+    # show up verbatim on a competitor's differently-worded listing for
+    # the same product. Confirmed live: an uncapped ceil(n/2) rejected a
+    # genuine Flipkart match for a verbose Amazon-derived title.
+    needed = min(max(1, (len(hint_words) + 1) // 2), 4)
+    if matches < needed:
+        return False
+    # A word-count threshold alone still passes on generic category words
+    # shared by every competing product ("earbuds", "bluetooth", "wireless")
+    # — confirmed live: an unrelated "KUMB144" earbud matched a boAt search
+    # this way. hint_words[0] is (by the brand-name-first convention nearly
+    # every listing follows) almost always the actual brand/property name,
+    # so require it specifically, not just enough generic words.
+    return hint_words[0] in title_l
+
+
+def _extract_amazon_pdp_price(html: str) -> float | None:
+    """Amazon's PRODUCT-DETAIL page (what resolve_origin actually opens
+    when the user pastes a product link) has a completely different DOM
+    from its search-results page — _extract_amazon_result's
+    s-search-result selector doesn't exist here at all, so the generic
+    heuristic was falling through and grabbing an unrelated ₹ figure
+    (confirmed live: a real amazon.in /dp/ page returned ₹500 — nowhere
+    near the actual price — because a PDP has many small ₹ mentions
+    scattered around: EMI-per-month text, "save ₹X" coupon banners,
+    delivery-charge notes). Amazon's own `.a-price .a-offscreen`
+    component is what it uses specifically for THE price, in a stable
+    cascade of core-price containers, most-specific first."""
+    soup = BeautifulSoup(html, "html.parser")
+    for selector in (
+        "#corePriceDisplay_desktop_feature_div span.a-price span.a-offscreen",
+        "#corePrice_feature_div span.a-price span.a-offscreen",
+        "#apex_desktop span.a-price span.a-offscreen",
+        "#ppd span.a-price span.a-offscreen",
+        "span.a-price span.a-offscreen",
+    ):
+        el = soup.select_one(selector)
+        if el:
+            m = re.search(r"([\d][\d,]{2,})", el.get_text(strip=True))
+            if m:
+                price = _clean_price(m.group(1))
+                if price is not None:
+                    return price
+    return None
+
+
+def _extract_top_price_and_link(html: str, base_url: str, domain: str | None = None,
+                                  title_hint: str | None = None,
+                                  hint_stopwords: set[str] = frozenset(),
+                                  require_hint_match: bool = False,
+                                  ) -> tuple[float | None, str | None, str | None]:
+    """Generic heuristic: scan the DOM for every plausible ₹ price
+    (skipping filter/sort/range chrome), then pick a candidate — good
+    enough for a demo, not a substitute for the real per-page verification
+    the ecommerce-deal-finder/hotel-deal-finder skills do with a live
+    browser and actual judgment.
+
+    Without a title_hint, or when a hint match isn't required, this
+    returns the FIRST plausible candidate in document order (usually the
+    top/most relevant result). When `require_hint_match` is set (a named
+    product or a specific hotel, not just a city), a candidate must
+    actually mention the thing being searched for — otherwise this
+    returns no match rather than silently reporting a different item's
+    price as if it were the requested one (confirmed live: Google Hotels
+    and Booking.com both returned an unrelated property's price for a
+    named-hotel search before this check existed — see docs/TESTING.md).
+
+    Amazon gets a tuned selector instead of this heuristic entirely (see
+    _extract_amazon_result) since it's the single most-checked site and
+    the generic heuristic misfired on it."""
     if domain and "amazon" in domain:
-        price, link, title = _extract_amazon_result(html)
+        price, link, title = _extract_amazon_result(
+            html, title_hint=title_hint, hint_stopwords=hint_stopwords,
+            require_hint_match=require_hint_match,
+        )
         if price is not None:
             return price, link, title
         # fall through to the generic heuristic as a backup, not a guess
@@ -100,6 +232,7 @@ def _extract_top_price_and_link(html: str, base_url: str,
     _RANGE_RE = re.compile(r"₹\s?[\d][\d,.]*\s*[-–to]{1,4}\s*₹\s?[\d][\d,.]*")
 
     soup = BeautifulSoup(html, "html.parser")
+    candidates: list[tuple[float, str | None, str | None]] = []
     for el in soup.find_all(string=PRICE_RE):
         m = PRICE_RE.search(el)
         if not m:
@@ -121,7 +254,7 @@ def _extract_top_price_and_link(html: str, base_url: str,
                 text = node.get_text(" ", strip=True)
                 if text and len(text) > 8 and "₹" not in text[:8]:
                     full_text = text
-                    title = text[:120]
+                    title = text[:160]
             node = node.parent
         if title and any(kw in title.lower() for kw in _DENYLIST):
             continue  # looks like filter/sort chrome, not a listing — keep scanning
@@ -134,8 +267,43 @@ def _extract_top_price_and_link(html: str, base_url: str,
             # "₹200 - ₹8,000+" style budget-slider text (caught live on
             # Booking.com, including its Hindi-language variant)
             continue
-        return price, link, title
-    return None, None, None
+        candidates.append((price, link, title))
+
+    if not candidates:
+        return None, None, None
+
+    if require_hint_match and title_hint:
+        matched = [c for c in candidates if _title_matches(c[2], title_hint, hint_stopwords)]
+        if not matched:
+            return None, None, None  # nothing on the page actually names it — don't guess
+        return min(matched, key=lambda c: c[0])
+
+    return candidates[0]
+
+
+_BLOCK_PHRASES = (
+    "unusual traffic", "verify you are a human", "verify you're a human",
+    "are you a robot", "access to this page has been denied",
+    "checking your browser", "robot check", "enable javascript and cookies",
+    "please complete the security check",
+)
+
+
+def _looks_blocked(html: str) -> bool:
+    """Real bot-check pages say so in their VISIBLE text ("verify you're
+    human", "unusual traffic..."). Checking raw HTML for a bare "captcha"
+    substring — the original approach — false-positives on any ordinary
+    page that merely embeds Google's reCAPTCHA widget as routine anti-abuse
+    tooling (its script URL/class names contain "recaptcha", which
+    contains "captcha"): confirmed live, a normal Booking.com results page
+    that loaded fine and simply had no availability for the dates asked
+    got mislabeled "blocked" this way. Scanning stripped visible text for
+    actual block phrasing avoids that."""
+    soup = BeautifulSoup(html, "html.parser")
+    for tag in soup(["script", "style"]):
+        tag.decompose()
+    visible = soup.get_text(" ", strip=True).lower()[:6000]
+    return any(phrase in visible for phrase in _BLOCK_PHRASES)
 
 
 def _absolutize(link: str | None, base_url: str) -> str | None:
@@ -160,10 +328,12 @@ async def _check_one_product_site(context, domain: str, query: str, run_dir: Pat
         await page.screenshot(path=str(shot_path), full_page=False)
         result["screenshot"] = f"/screenshots/{run_dir.name}/{shot_path.name}"
 
-        price, link, title = _extract_top_price_and_link(html, url, domain=domain)
+        price, link, title = _extract_top_price_and_link(
+            html, url, domain=domain, title_hint=query,
+            hint_stopwords=_PRODUCT_STOPWORDS, require_hint_match=True,
+        )
         if price is None:
-            lc = html.lower()
-            if "captcha" in lc or "robot" in lc or "access denied" in lc:
+            if _looks_blocked(html):
                 result["status"] = "blocked"
                 result["note"] = "Site returned a bot check — skipped rather than bypassed."
             else:
@@ -197,15 +367,20 @@ async def _check_one_hotel_site(context, domain: str, place: str, checkin: str,
         await page.screenshot(path=str(shot_path), full_page=False)
         result["screenshot"] = f"/screenshots/{run_dir.name}/{shot_path.name}"
 
-        price, link, title = _extract_top_price_and_link(html, url)
+        price, link, title = _extract_top_price_and_link(
+            html, url, title_hint=place, hint_stopwords=_HOTEL_STOPWORDS,
+            require_hint_match=_looks_like_specific_hotel(place),
+        )
         if price is None:
-            lc = html.lower()
-            if "captcha" in lc or "robot" in lc:
+            if _looks_blocked(html):
                 result["status"] = "blocked"
                 result["note"] = "Site returned a bot check — skipped rather than bypassed."
             else:
                 result["status"] = "no_match"
-                result["note"] = "No visible rate found for these dates — check the link manually."
+                if _looks_like_specific_hotel(place):
+                    result["note"] = f"Couldn't confirm a listing actually naming \"{place}\" here — check the link manually."
+                else:
+                    result["note"] = "No visible rate found for these dates — check the link manually."
         else:
             result["status"] = "ok"
             result["price_inr"] = price
@@ -262,7 +437,14 @@ async def resolve_origin(browser, url: str) -> tuple[dict, str | None]:
         result["screenshot"] = f"/screenshots/{run_dir.name}/{shot_path.name}"
         result["title"] = title_text[:150] if title_text else None
 
-        price, _, _ = _extract_top_price_and_link(html, url, domain=domain)
+        # A pasted product link is (virtually) always a product-DETAIL
+        # page, never a search-results page — Amazon's two page types have
+        # entirely different markup, so this needs its own extractor
+        # rather than the search-results heuristic used elsewhere.
+        if "amazon" in domain:
+            price = _extract_amazon_pdp_price(html)
+        else:
+            price, _, _ = _extract_top_price_and_link(html, url, domain=domain)
         if price is not None:
             result["status"] = "ok"
             result["price_inr"] = price

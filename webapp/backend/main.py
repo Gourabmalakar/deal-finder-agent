@@ -63,7 +63,9 @@ def pick_category(query: str, catalog: dict) -> tuple[str, list[str]]:
 
 
 class ProductQuery(BaseModel):
-    query: str = Field(..., min_length=2, max_length=300)
+    # Real product URLs (Amazon especially) routinely carry long tracking
+    # query strings — a 300-char cap rejected a real pasted link in testing.
+    query: str = Field(..., min_length=2, max_length=2000)
 
 
 class HotelQuery(BaseModel):

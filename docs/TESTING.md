@@ -1,5 +1,71 @@
 # Testing report — webapp scraper
 
+## Round 2 — bugs Gourab found using the app for real (2026-09-08)
+
+Round 1 below was this project's own test pass. Round 2 came from Gourab
+actually using the app and hitting two real failures — both were deeper
+than they first looked, and fixing them properly surfaced several more
+issues along the way. All confirmed fixed by re-running the same real
+request afterward, not assumed.
+
+1. **Pasting a real Amazon URL failed with "Something went wrong: [object
+   Object]".** Root cause: real Amazon URLs carry long tracking query
+   strings that exceeded the backend's 300-character cap on the query
+   field, and separately, FastAPI/Pydantic returns validation errors as an
+   *array* of `{msg, loc, ...}` objects rather than a string — the
+   frontend was stringifying that array directly into the useless
+   `[object Object]`. **Fix**: raised the cap to 2000 characters and
+   added `errorMessage()` to the frontend to actually read `.msg` from
+   each validation error.
+2. **Hotel search for a named property ("Hotel Sepoy Grande") returned
+   only 1 result, and it was for the wrong hotel** (Google Hotels matched
+   "ibis Styles Mysuru" instead). Root cause: the extractor took the
+   *first* ₹ price found on a results page without checking it actually
+   named the requested property — a real problem on any multi-listing
+   results page, not just an occasional miss. Fixing this properly meant
+   fixing four separate things:
+   - Added `_title_matches()`: a candidate must now share the search's
+     distinctive words (capped at 4, so a long title doesn't need to
+     match *all* of a short one) **and** specifically its first
+     brand/name word, before its price counts as a match for a named
+     product or hotel. A bare city name (e.g. "Goa") skips this — there's
+     no specific property to confirm against.
+   - **Apostrophe/punctuation broke real matches**: "Levis" (as typed)
+     doesn't literally appear as a substring of "LEVI'S" (as sites spell
+     it) — confirmed live, this alone rejected every genuine Levi's
+     match. Fixed by stripping punctuation from both sides before
+     comparing.
+   - **The "blocked" vs "no_match" check was a false-positive machine**:
+     it scanned raw HTML for the substring "captcha", which matches any
+     page that merely *embeds* Google's reCAPTCHA widget as routine
+     anti-abuse tooling (script URLs contain "recaptcha") — completely
+     unrelated to whether the page actually blocked us. Confirmed live: a
+     normal, fully-loaded Booking.com results page (correctly showing
+     Hotel Sepoy Grande has no availability for the requested dates) got
+     mislabeled "blocked". Fixed by scanning visible text only, for actual
+     block phrasing ("verify you are a human", "unusual traffic", etc.),
+     not script tag contents.
+   - **Amazon's own extractor only ever checked the first result card**:
+     real Amazon search pages routinely lead with 1-3 sponsored ads for a
+     *different brand entirely* (confirmed live: searching "boAt Airdopes
+     141" surfaced Noise and GOBOULT ads first) — and separately, some
+     card layouts put only the bare brand name in `<h2>` ("boAt", nothing
+     else) with the actual full title sitting in the product image's
+     `alt` attribute instead. Fixed by scanning every card for one that
+     actually names the brand, and reading title from the image `alt`
+     text rather than assuming `<h2>` always has it.
+
+   After all four fixes: Google Hotels correctly returned "Hotel Sepoy
+   Grande ₹1,406" (matching the page's own visible "GREAT DEAL" badge
+   exactly), and Booking/Agoda correctly reported *why* they had nothing
+   (no availability for the dates; Agoda's URL template doesn't actually
+   pre-fill its search — see limitations below) instead of a wrong price
+   or a false "blocked". A regression pass across every Round 1 case
+   confirmed no prior fix was undone (`webapp/test_runs/*.json` from this
+   session).
+
+## Round 1
+
 A live test pass against `webapp/` (Path B — see `docs/ARCHITECTURE.md`),
 run against real sites, not mocks. Raw responses saved under
 `webapp/test_runs/*.json` (gitignored — local artifacts of this pass, not
