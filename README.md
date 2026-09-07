@@ -64,6 +64,20 @@ See [`CLAUDE.md`](CLAUDE.md) §2 for why the scout subagents don't take
 screenshots themselves (they don't have a live browser — only the main
 session's Browser tool does).
 
+## Local test webapp
+
+`webapp/` is a real, runnable web app version — a FastAPI backend that
+drives a headless browser to check sites live, plus a frontend page — for
+testing outside of Claude Code. See [`webapp/README.md`](webapp/README.md)
+for setup and its known limitations (best-effort price extraction, not yet
+as reliable as the Claude Code skills above). Run it with:
+
+```bash
+webapp/run.sh
+```
+
+then open http://127.0.0.1:8000.
+
 ## Repo layout
 
 ```

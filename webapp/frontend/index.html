@@ -1,0 +1,449 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Deal Finder</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
+<style>
+  :root{
+    --bg: #f4f5fb;
+    --surface: #ffffff;
+    --surface-2: #f8f9fd;
+    --border: #e7e8f2;
+    --text: #14142b;
+    --text-muted: #6b6d85;
+    --text-faint: #9294ab;
+    --accent-1: #6c5ce7;
+    --accent-2: #7f6bf0;
+    --accent-grad: linear-gradient(135deg, #6c5ce7 0%, #a06cf5 50%, #ff6fa5 100%);
+    --success: #0f9d68;
+    --success-bg: #e7f8f1;
+    --warn: #b9770e;
+    --warn-bg: #fdf1e0;
+    --danger: #d1435b;
+    --danger-bg: #fdeaee;
+    --shadow-sm: 0 1px 2px rgba(20,20,43,.05), 0 1px 1px rgba(20,20,43,.04);
+    --shadow-md: 0 8px 24px rgba(20,20,43,.08), 0 2px 6px rgba(20,20,43,.05);
+    --shadow-lg: 0 20px 45px rgba(20,20,43,.14), 0 6px 16px rgba(20,20,43,.08);
+    --radius-lg: 20px;
+    --radius-md: 14px;
+    --radius-sm: 10px;
+  }
+  @media (prefers-color-scheme: dark){
+    :root{
+      --bg: #0c0c14;
+      --surface: #16162280;
+      --surface: #17172449;
+      --surface: #17182300;
+      --surface: #1a1a26;
+      --surface-2: #14141f;
+      --border: #2a2a3a;
+      --text: #f1f1f8;
+      --text-muted: #a3a5bd;
+      --text-faint: #6f7188;
+      --success: #3fd996;
+      --success-bg: #103527;
+      --warn: #f0b64c;
+      --warn-bg: #382c11;
+      --danger: #ff7d93;
+      --danger-bg: #3a1620;
+      --shadow-sm: 0 1px 2px rgba(0,0,0,.3);
+      --shadow-md: 0 8px 24px rgba(0,0,0,.35);
+      --shadow-lg: 0 20px 45px rgba(0,0,0,.45);
+    }
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0}
+  body{
+    background:
+      radial-gradient(1200px 500px at 15% -10%, rgba(108,92,231,.14), transparent 60%),
+      radial-gradient(1000px 500px at 100% 0%, rgba(255,111,165,.10), transparent 55%),
+      var(--bg);
+    color:var(--text);
+    font-family:'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    -webkit-font-smoothing:antialiased;
+    min-height:100vh;
+  }
+  h1,h2,h3,.jakarta{font-family:'Plus Jakarta Sans', 'Inter', sans-serif}
+  .wrap{max-width:1080px;margin:0 auto;padding:0 24px 96px}
+
+  /* ---------- hero ---------- */
+  .hero{padding:56px 0 28px;text-align:center}
+  .badge-pill{
+    display:inline-flex;align-items:center;gap:6px;
+    padding:6px 14px;border-radius:999px;
+    background:var(--surface);border:1px solid var(--border);
+    font-size:13px;font-weight:500;color:var(--text-muted);
+    box-shadow:var(--shadow-sm);margin-bottom:20px;
+  }
+  .badge-pill .dot{width:6px;height:6px;border-radius:50%;background:var(--success);box-shadow:0 0 0 3px var(--success-bg)}
+  .hero h1{
+    font-size:clamp(32px,5vw,52px);font-weight:800;letter-spacing:-.03em;
+    margin:0 0 12px;line-height:1.05;
+  }
+  .hero .grad{
+    background:var(--accent-grad);-webkit-background-clip:text;background-clip:text;color:transparent;
+  }
+  .hero p{font-size:17px;color:var(--text-muted);max-width:520px;margin:0 auto;line-height:1.6}
+
+  /* ---------- mode switch ---------- */
+  .switch{
+    display:flex;gap:4px;max-width:360px;margin:32px auto 0;
+    background:var(--surface);border:1px solid var(--border);border-radius:999px;
+    padding:4px;box-shadow:var(--shadow-sm);
+  }
+  .switch button{
+    position:relative;z-index:1;
+    flex:1;border:0;background:transparent;padding:11px 16px;border-radius:999px;
+    font-family:inherit;font-size:14.5px;font-weight:600;color:var(--text-muted);
+    cursor:pointer;transition:color .2s ease;display:flex;align-items:center;justify-content:center;gap:7px;
+  }
+  .switch button.active{color:#fff}
+  .switch .thumb{
+    position:absolute;inset:4px;width:calc(50% - 4px);border-radius:999px;
+    background:var(--accent-grad);box-shadow:0 6px 16px rgba(108,92,231,.35);
+    transition:transform .28s cubic-bezier(.5,0,.1,1);
+  }
+  .switch-outer{position:relative;max-width:360px;margin:32px auto 0}
+  .switch-outer .switch{position:relative;margin:0}
+  .switch button svg{width:16px;height:16px}
+
+  /* ---------- panels / cards ---------- */
+  .panel{display:none;animation:fade .35s ease}
+  .panel.active{display:block}
+  @keyframes fade{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+
+  .card{
+    background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);
+    box-shadow:var(--shadow-md);padding:32px;margin-top:28px;
+  }
+  .field{margin-bottom:18px}
+  .field label{display:block;font-size:13px;font-weight:600;color:var(--text-muted);margin-bottom:8px;letter-spacing:.01em}
+  .field input{
+    width:100%;padding:13px 15px;border-radius:var(--radius-sm);border:1.5px solid var(--border);
+    background:var(--surface-2);color:var(--text);font-family:inherit;font-size:15px;
+    transition:border-color .15s ease, box-shadow .15s ease;
+  }
+  .field input::placeholder{color:var(--text-faint)}
+  .field input:focus{outline:none;border-color:var(--accent-1);box-shadow:0 0 0 4px rgba(108,92,231,.14)}
+  .row2{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:14px}
+  .row-guest{max-width:160px}
+  .err{font-size:13.5px;color:var(--danger);margin-top:8px;display:none;font-weight:500}
+
+  .btn-primary{
+    width:100%;border:0;border-radius:var(--radius-sm);padding:15px;margin-top:6px;
+    background:var(--accent-grad);color:#fff;font-family:inherit;font-size:15.5px;font-weight:700;
+    cursor:pointer;box-shadow:0 10px 24px rgba(108,92,231,.32);
+    display:flex;align-items:center;justify-content:center;gap:8px;
+    transition:transform .15s ease, box-shadow .15s ease, filter .15s ease;
+  }
+  .btn-primary:hover{filter:brightness(1.05);transform:translateY(-1px)}
+  .btn-primary:active{transform:scale(.98)}
+  .btn-primary:disabled{opacity:.7;cursor:default;transform:none}
+  .spinner{width:17px;height:17px;border-radius:50%;border:2.5px solid rgba(255,255,255,.4);border-top-color:#fff;animation:spin .7s linear infinite;display:none}
+  @keyframes spin{to{transform:rotate(360deg)}}
+
+  /* ---------- status / progress ---------- */
+  .status-line{display:none;align-items:center;gap:10px;margin-top:16px;font-size:13.5px;color:var(--text-muted)}
+  .status-line .bar{flex:1;height:4px;border-radius:4px;background:var(--border);overflow:hidden}
+  .status-line .bar > i{display:block;height:100%;width:30%;background:var(--accent-grad);border-radius:4px;animation:load 1.4s ease-in-out infinite}
+  @keyframes load{0%{transform:translateX(-100%)}100%{transform:translateX(330%)}}
+
+  /* ---------- results ---------- */
+  .results{margin-top:36px}
+  .results-head{display:flex;align-items:baseline;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:16px}
+  .results-head h2{font-size:19px;font-weight:700;margin:0}
+  .results-head .meta{font-size:13px;color:var(--text-faint)}
+
+  .result-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:16px}
+  .rcard{
+    position:relative;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-md);
+    overflow:hidden;box-shadow:var(--shadow-sm);transition:transform .18s ease, box-shadow .18s ease;
+    display:flex;flex-direction:column;
+  }
+  .rcard:hover{transform:translateY(-3px);box-shadow:var(--shadow-md)}
+  .rcard.best{border-color:var(--accent-1);box-shadow:0 0 0 2px var(--accent-1), var(--shadow-md)}
+  .rcard .ribbon{
+    position:absolute;top:12px;left:12px;z-index:2;
+    background:var(--accent-grad);color:#fff;font-size:11.5px;font-weight:700;
+    padding:4px 10px;border-radius:999px;letter-spacing:.02em;box-shadow:0 4px 10px rgba(108,92,231,.35);
+  }
+  .rcard .shot{width:100%;aspect-ratio:16/10;background:var(--surface-2);overflow:hidden;position:relative}
+  .rcard .shot img{width:100%;height:100%;object-fit:cover;object-position:top;display:block}
+  .rcard .shot .noimg{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:var(--text-faint);font-size:12px}
+  .rcard .body{padding:14px 16px 16px;display:flex;flex-direction:column;gap:6px;flex:1}
+  .rcard .site{font-size:12.5px;font-weight:700;color:var(--accent-1);text-transform:uppercase;letter-spacing:.04em}
+  .rcard .title{font-size:13.5px;color:var(--text-muted);line-height:1.4;min-height:2.5em;
+    display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+  .rcard .price{font-size:24px;font-weight:800;letter-spacing:-.01em;margin-top:2px}
+  .rcard .note{font-size:12px;color:var(--text-faint);line-height:1.4}
+  .rcard .go{
+    margin-top:8px;text-decoration:none;text-align:center;padding:10px;border-radius:var(--radius-sm);
+    border:1.5px solid var(--border);color:var(--text);font-weight:600;font-size:13.5px;
+    transition:border-color .15s ease, background .15s ease;
+  }
+  .rcard .go:hover{border-color:var(--accent-1);background:var(--surface-2)}
+
+  .skipped{margin-top:22px}
+  .skipped summary{cursor:pointer;font-size:13.5px;color:var(--text-muted);font-weight:600;list-style:none;display:flex;align-items:center;gap:6px}
+  .skipped summary::-webkit-details-marker{display:none}
+  .skipped summary svg{transition:transform .2s ease}
+  .skipped[open] summary svg{transform:rotate(90deg)}
+  .skip-list{margin-top:10px;display:flex;flex-direction:column;gap:8px}
+  .skip-row{
+    display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:var(--radius-sm);
+    background:var(--surface-2);border:1px solid var(--border);font-size:13px;
+  }
+  .skip-row .site{font-weight:700;text-transform:uppercase;font-size:11.5px;letter-spacing:.03em;color:var(--text-muted);min-width:120px}
+  .skip-tag{font-size:11px;font-weight:700;padding:2px 8px;border-radius:999px}
+  .skip-tag.blocked{background:var(--danger-bg);color:var(--danger)}
+  .skip-tag.no_match{background:var(--warn-bg);color:var(--warn)}
+  .skip-tag.error{background:var(--warn-bg);color:var(--warn)}
+  .skip-row .note{color:var(--text-faint);flex:1}
+
+  .empty-hint{font-size:13.5px;color:var(--text-faint);margin-top:6px;line-height:1.5}
+  .footer-note{text-align:center;margin-top:56px;font-size:12.5px;color:var(--text-faint);line-height:1.6}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="hero">
+    <span class="badge-pill"><span class="dot"></span> Live local test build</span>
+    <h1>Find the <span class="grad">cheapest verified deal</span></h1>
+    <p>Search a product or a hotel once — this checks the top sites for real, live, with proof, so you don't have to open ten tabs yourself.</p>
+  </div>
+
+  <div class="switch-outer">
+    <div class="switch" id="switch">
+      <div class="thumb" id="thumb"></div>
+      <button type="button" id="tab-product" class="active">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 2 3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4Z"/><path d="M3 6h18"/><path d="M16 10a4 4 0 0 1-8 0"/></svg>
+        Product
+      </button>
+      <button type="button" id="tab-hotel">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 4v16"/><path d="M2 8h18a2 2 0 0 1 2 2v10"/><path d="M2 17h20"/><path d="M6 8v9"/></svg>
+        Hotel
+      </button>
+    </div>
+  </div>
+
+  <!-- PRODUCT PANEL -->
+  <div class="panel active" id="panel-product">
+    <div class="card">
+      <div class="field">
+        <label for="product-input">Product link or description</label>
+        <input id="product-input" type="text" placeholder="https://www.amazon.in/... or iPhone 17 256GB Mist Blue" autocomplete="off" />
+      </div>
+      <div class="err" id="product-err">Paste a product link or describe what you're looking for.</div>
+      <button class="btn-primary" id="product-submit">
+        <span class="spinner" id="product-spinner"></span>
+        <span id="product-btn-label">Find the best price</span>
+      </button>
+      <div class="status-line" id="product-status">
+        <span id="product-status-text">Checking sites…</span>
+        <div class="bar"><i></i></div>
+      </div>
+    </div>
+    <div class="results" id="product-results"></div>
+  </div>
+
+  <!-- HOTEL PANEL -->
+  <div class="panel" id="panel-hotel">
+    <div class="card">
+      <div class="field">
+        <label for="hotel-place">Place or hotel</label>
+        <input id="hotel-place" type="text" placeholder="Mysuru, or a specific hotel name" autocomplete="off" />
+      </div>
+      <div class="row2 field">
+        <div>
+          <label for="hotel-checkin">Check-in</label>
+          <input id="hotel-checkin" type="date" />
+        </div>
+        <div>
+          <label for="hotel-checkout">Check-out</label>
+          <input id="hotel-checkout" type="date" />
+        </div>
+      </div>
+      <div class="field row-guest">
+        <label for="hotel-guests">Guests</label>
+        <input id="hotel-guests" type="number" min="1" value="2" />
+      </div>
+      <div class="err" id="hotel-err">Add a place, check-in and check-out dates, and guest count.</div>
+      <button class="btn-primary" id="hotel-submit">
+        <span class="spinner" id="hotel-spinner"></span>
+        <span id="hotel-btn-label">Find the best hotel rate</span>
+      </button>
+      <div class="status-line" id="hotel-status">
+        <span id="hotel-status-text">Checking sites…</span>
+        <div class="bar"><i></i></div>
+      </div>
+    </div>
+    <div class="results" id="hotel-results"></div>
+  </div>
+
+  <p class="footer-note">
+    Local test build — runs entirely on your machine. Prices are best-effort<br/>
+    and unverified numbers are never shown; a site that can't be read is marked, not guessed.
+  </p>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+
+// ---------- tab switch ----------
+const tabProduct = $('tab-product'), tabHotel = $('tab-hotel'), thumb = $('thumb');
+const panelProduct = $('panel-product'), panelHotel = $('panel-hotel');
+function setTab(which){
+  const isProduct = which === 'product';
+  tabProduct.classList.toggle('active', isProduct);
+  tabHotel.classList.toggle('active', !isProduct);
+  panelProduct.classList.toggle('active', isProduct);
+  panelHotel.classList.toggle('active', !isProduct);
+  thumb.style.transform = isProduct ? 'translateX(0)' : 'translateX(100%)';
+}
+tabProduct.addEventListener('click', () => setTab('product'));
+tabHotel.addEventListener('click', () => setTab('hotel'));
+
+// ---------- helpers ----------
+function money(n){
+  if (n === null || n === undefined) return '—';
+  return '₹' + Math.round(n).toLocaleString('en-IN');
+}
+function escapeHtml(s){
+  return (s || '').replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+function siteName(domain){
+  return domain.split('/')[0].replace('www.', '').split('.')[0];
+}
+
+function renderResults(container, data, kind){
+  const cheapest = data.cheapest || [];
+  const skipped = data.skipped || [];
+  if (!cheapest.length && !skipped.length){
+    container.innerHTML = '<p class="empty-hint">No sites returned a result. Try again, or check your connection.</p>';
+    return;
+  }
+
+  let html = '';
+  if (cheapest.length){
+    html += `<div class="results-head"><h2>${cheapest.length} verified price${cheapest.length>1?'s':''} found</h2>
+      <span class="meta">checked ${new Date(data.checked_at).toLocaleTimeString('en-IN')}</span></div>`;
+    html += '<div class="result-grid">';
+    cheapest.forEach((r, i) => {
+      const link = kind === 'product' ? r.product_url : r.booking_url;
+      html += `
+        <div class="rcard ${i===0?'best':''}">
+          ${i===0 ? '<div class="ribbon">Cheapest</div>' : ''}
+          <div class="shot">
+            ${r.screenshot ? `<img src="${r.screenshot}" alt="Screenshot of ${escapeHtml(siteName(r.site))}" loading="lazy" />` : '<div class="noimg">No preview</div>'}
+          </div>
+          <div class="body">
+            <span class="site">${escapeHtml(siteName(r.site))}</span>
+            <span class="title">${escapeHtml(r.title || '')}</span>
+            <span class="price">${money(r.price_inr)}</span>
+            <span class="note">${escapeHtml(r.note || '')}</span>
+            <a class="go" href="${link}" target="_blank" rel="noopener noreferrer">View listing →</a>
+          </div>
+        </div>`;
+    });
+    html += '</div>';
+  }
+
+  if (skipped.length){
+    html += `<details class="skipped">
+      <summary><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="m9 6 6 6-6 6"/></svg>
+      ${skipped.length} site${skipped.length>1?'s':''} skipped</summary>
+      <div class="skip-list">`;
+    skipped.forEach(r => {
+      html += `<div class="skip-row">
+        <span class="site">${escapeHtml(siteName(r.site))}</span>
+        <span class="skip-tag ${r.status}">${r.status.replace('_',' ')}</span>
+        <span class="note">${escapeHtml(r.note || '')}</span>
+      </div>`;
+    });
+    html += '</div></details>';
+  }
+
+  container.innerHTML = html;
+}
+
+async function runSearch({button, spinner, label, statusEl, statusText, errEl, resultsEl, endpoint, body, kind, defaultLabel}){
+  button.disabled = true;
+  spinner.style.display = 'inline-block';
+  label.textContent = 'Searching…';
+  statusEl.style.display = 'flex';
+  const messages = ['Checking sites…', 'Opening product pages…', 'Reading live prices…', 'Capturing screenshots…', 'Almost there…'];
+  let mi = 0;
+  const interval = setInterval(() => { mi = (mi + 1) % messages.length; statusText.textContent = messages[mi]; }, 3000);
+
+  try {
+    const res = await fetch(endpoint, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(body),
+    });
+    if (!res.ok){
+      const err = await res.json().catch(() => ({detail: 'Request failed.'}));
+      throw new Error(err.detail || 'Request failed.');
+    }
+    const data = await res.json();
+    renderResults(resultsEl, data, kind);
+  } catch (e) {
+    resultsEl.innerHTML = `<p class="empty-hint">Something went wrong: ${escapeHtml(e.message)}</p>`;
+  } finally {
+    clearInterval(interval);
+    button.disabled = false;
+    spinner.style.display = 'none';
+    label.textContent = defaultLabel;
+    statusEl.style.display = 'none';
+  }
+}
+
+// ---------- product ----------
+const productInput = $('product-input'), productErr = $('product-err');
+productInput.addEventListener('input', () => productErr.style.display = 'none');
+$('product-submit').addEventListener('click', () => {
+  const val = productInput.value.trim();
+  if (!val){ productErr.style.display = 'block'; return; }
+  productErr.style.display = 'none';
+  runSearch({
+    button: $('product-submit'), spinner: $('product-spinner'), label: $('product-btn-label'),
+    statusEl: $('product-status'), statusText: $('product-status-text'),
+    resultsEl: $('product-results'), endpoint: '/api/product-search',
+    body: {query: val}, kind: 'product', defaultLabel: 'Find the best price',
+  });
+});
+
+// ---------- hotel ----------
+const hPlace = $('hotel-place'), hIn = $('hotel-checkin'), hOut = $('hotel-checkout'),
+      hGuests = $('hotel-guests'), hErr = $('hotel-err');
+[hPlace, hIn, hOut, hGuests].forEach(el => el.addEventListener('input', () => hErr.style.display = 'none'));
+$('hotel-submit').addEventListener('click', () => {
+  const place = hPlace.value.trim();
+  const guests = parseInt(hGuests.value, 10);
+  if (!place || !hIn.value || !hOut.value || !guests || guests < 1){
+    hErr.textContent = 'Add a place, check-in and check-out dates, and guest count.';
+    hErr.style.display = 'block';
+    return;
+  }
+  if (hOut.value <= hIn.value){
+    hErr.textContent = 'Check-out must be after check-in.';
+    hErr.style.display = 'block';
+    return;
+  }
+  hErr.style.display = 'none';
+  runSearch({
+    button: $('hotel-submit'), spinner: $('hotel-spinner'), label: $('hotel-btn-label'),
+    statusEl: $('hotel-status'), statusText: $('hotel-status-text'),
+    resultsEl: $('hotel-results'), endpoint: '/api/hotel-search',
+    body: {place, checkin: hIn.value, checkout: hOut.value, guests}, kind: 'hotel',
+    defaultLabel: 'Find the best hotel rate',
+  });
+});
+</script>
+</body>
+</html>

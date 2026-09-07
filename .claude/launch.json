@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "deal-finder-webapp",
+      "runtimeExecutable": "bash",
+      "runtimeArgs": ["webapp/run.sh"],
+      "port": 8000
+    }
+  ]
+}

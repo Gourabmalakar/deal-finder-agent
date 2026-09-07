@@ -4,3 +4,10 @@ runs/*
 !runs/.gitkeep
 
 .DS_Store
+
+# Local test webapp — venv, browser binaries and captured screenshots
+# aren't checked in.
+webapp/.venv/
+webapp/backend/static/screenshots/*
+!webapp/backend/static/screenshots/.gitkeep
+
