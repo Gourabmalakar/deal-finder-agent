@@ -1,0 +1,7 @@
+webapp/.venv
+webapp/test_runs
+webapp/backend/static/screenshots
+webapp/uptime.log
+webapp/uptime_launchd.log
+.git
+runs

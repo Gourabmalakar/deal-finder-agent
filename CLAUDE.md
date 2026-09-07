@@ -39,6 +39,19 @@ its work: live screenshot, direct booking/buy link, and price history.
 Both modes are **decision support**, not a booking engine. The output is
 always a list Gourab (or whoever is using this) acts on manually.
 
+There are **two ways to run a search**, sharing the same data files:
+
+| | Claude Code skills (§2) | Local webapp (`webapp/`) |
+|---|---|---|
+| Where | This chat, via the skills/subagents below | `webapp/run.sh` → a browser page at `localhost:8000` |
+| Verification | A real person's live Browser tool, per-page | An automated headless Chromium, generic heuristics |
+| Reliability | Higher — a human/Claude judges each match | Best-effort — see `webapp/README.md`'s known limitations |
+| Use it for | A search you'll actually act on | Quick local experimentation, or as a always-on backend |
+
+Full webapp architecture, endpoints, and the scraping approach are in
+**`docs/ARCHITECTURE.md`**; this file stays focused on the skills/agents/
+hooks side.
+
 ---
 
 ## 2. How it's organised
@@ -95,6 +108,7 @@ search from scratch.
 |---|---|
 | `price-scout` | Broad, text-only candidate discovery for a product across the top-5 sites for its category, plus price-aggregator sites. No live browser — returns candidate URLs + claimed prices for the main session to verify. |
 | `hotel-scout` | Same, for a hotel across the default OTA list plus any user-supplied links. |
+| `deal-evaluator` | Scores a completed search against `evals/criteria.yaml` before it's presented — both live skill runs and rows the webapp logged to `data/evals.db`. See §7. |
 
 ### Hooks — `.claude/hooks/`
 
@@ -130,6 +144,9 @@ Registered in `.claude/settings.json`.
 - `runs/` — scratch space for screenshots captured during a session
   (gitignored). Deliver them to the user via `SendUserFile` or an Artifact;
   don't leave the user hunting for a local path.
+- `data/evals.db` — SQLite, **shared** between the webapp (which writes to
+  it automatically on every request) and the `deal-evaluator` subagent
+  (which reads it, and writes its own qualitative verdicts back). See §6.
 
 ---
 
@@ -158,3 +175,36 @@ finished one.
 - **Prices are point-in-time.** Always timestamp every reported price and
   say so plainly — a price checked an hour ago is not the same as a price
   checked now, especially for flash sales and dynamic hotel pricing.
+
+---
+
+## 6. Evaluation
+
+Every search is checked, not just produced. `evals/criteria.yaml` is the
+one list of pass/fail criteria both paths score against:
+
+- The **webapp** runs the automatic (rule-based) criteria itself on every
+  request (`webapp/backend/evaluator.py`) and logs the verdict to
+  `data/evals.db` before returning a response — this needs no LLM call, so
+  it happens on literally every query with no extra cost.
+- The **`deal-evaluator` subagent** does the judgment-based checks a fixed
+  rule can't (is this really the same variant/property? does a price look
+  plausible for this specific item?) — invoked automatically at the end of
+  every skill run (§2 step 6/7), and on demand over the webapp's logged
+  history via `/review-evals`.
+
+Run `/review-evals` periodically to have it sweep unreviewed webapp rows —
+it writes verdicts back into `data/evals.db` and surfaces any repeating
+pattern (e.g. one site consistently mis-parsed) worth fixing at the source
+rather than patching row by row.
+
+---
+
+## 7. Uptime monitoring
+
+`webapp/scripts/check_uptime.py` hits `/api/health` and exits non-zero if
+the webapp doesn't respond. A scheduled task runs it periodically and
+alerts if it fails — see `webapp/README.md` for the current target URL
+(local vs. hosted) and how to change it after deploying. This checks that
+the process is *up*, not that search results are good — that's what §6 is
+for.

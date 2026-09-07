@@ -5,9 +5,17 @@ runs/*
 
 .DS_Store
 
-# Local test webapp — venv, browser binaries and captured screenshots
-# aren't checked in.
+# Local test webapp — venv, browser binaries, captured screenshots, test
+# output and logs aren't checked in.
 webapp/.venv/
 webapp/backend/static/screenshots/*
 !webapp/backend/static/screenshots/.gitkeep
+webapp/test_runs/
+webapp/uptime.log
+webapp/uptime_launchd.log
+
+# Shared eval log — a growing local observability DB, not source. Unlike
+# data/price_history.csv (the intentional track record), this is a cache
+# of request/response JSON worth pruning, not versioning.
+data/evals.db
 

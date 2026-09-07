@@ -1,0 +1,17 @@
+# Render Blueprint — https://render.com/docs/blueprint-spec
+# Deploy: push this repo to GitHub, then in Render "New +" → "Blueprint",
+# point it at the repo. Render reads this file and provisions the service
+# below. Free tier: sleeps after 15 min idle (a request wakes it in ~30-60s),
+# and its filesystem is ephemeral — data/price_history.csv and data/evals.db
+# reset on every redeploy/restart unless a paid persistent disk is added.
+services:
+  - type: web
+    name: deal-finder-webapp
+    runtime: docker
+    dockerfilePath: ./webapp/Dockerfile
+    dockerContext: .
+    plan: free
+    healthCheckPath: /api/health
+    envVars:
+      - key: PORT
+        value: 8000

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -11,6 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from playwright.async_api import async_playwright
 from pydantic import BaseModel, Field
 
+import evaluator
 import scraper
 
 ROOT = Path(__file__).resolve().parent.parent.parent
@@ -86,17 +88,39 @@ async def health():
 
 @app.post("/api/product-search")
 async def product_search(body: ProductQuery):
-    catalog = load_category_sites()
-    category, sites = pick_category(body.query, catalog)
+    t0 = time.monotonic()
+    raw = body.query.strip()
     browser = _state["browser"]
-    result = await scraper.run_product_search(browser, body.query.strip(), sites)
+
+    origin_result = None
+    search_text = raw
+    if raw.lower().startswith(("http://", "https://")):
+        origin_result, resolved_title = await scraper.resolve_origin(browser, raw)
+        if resolved_title:
+            search_text = resolved_title
+
+    catalog = load_category_sites()
+    category, sites = pick_category(search_text, catalog)
+    if origin_result:
+        # don't re-search the site the user's own link already came from
+        sites = [s for s in sites if s != origin_result["site"]]
+
+    result = await scraper.run_product_search(browser, search_text, sites, origin_result=origin_result)
     result["category"] = category
     result["sites_checked"] = sites
+    result["origin_query"] = raw
+    result["resolved_query"] = search_text
+
+    eval_verdict = evaluator.evaluate_and_log(
+        "product", {"query": raw}, result, time.monotonic() - t0
+    )
+    result["_eval"] = eval_verdict
     return result
 
 
 @app.post("/api/hotel-search")
 async def hotel_search(body: HotelQuery):
+    t0 = time.monotonic()
     if not DATE_RE.match(body.checkin) or not DATE_RE.match(body.checkout):
         raise HTTPException(400, "Dates must be in YYYY-MM-DD format.")
     if body.checkout <= body.checkin:
@@ -109,4 +133,16 @@ async def hotel_search(body: HotelQuery):
         browser, body.place.strip(), body.checkin, body.checkout, body.guests, sites
     )
     result["sites_checked"] = sites
+
+    eval_verdict = evaluator.evaluate_and_log(
+        "hotel",
+        {"place": body.place, "checkin": body.checkin, "checkout": body.checkout, "guests": body.guests},
+        result, time.monotonic() - t0,
+    )
+    result["_eval"] = eval_verdict
     return result
+
+
+@app.get("/api/evals")
+async def get_evals(limit: int = 50, only_failed: bool = False):
+    return {"runs": evaluator.recent_runs(limit=limit, only_failed=only_failed)}

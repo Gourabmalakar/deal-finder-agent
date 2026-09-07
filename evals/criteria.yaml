@@ -1,0 +1,81 @@
+# Objective pass/fail criteria for every deal-finder search — product or
+# hotel, whether it ran through a Claude Code skill or the local webapp.
+# Both the webapp's automatic rule-based checker
+# (webapp/backend/evaluator.py) and the deal-evaluator subagent
+# (.claude/agents/deal-evaluator.md) score against this file. Keep it in
+# sync — a criterion added here should be checked by both, or noted below
+# as "subagent-only" when it needs judgment a fixed rule can't apply.
+version: 1
+
+shared_criteria:
+  - id: has_proof
+    description: >
+      Every reported price has a screenshot and the exact URL it was read
+      from. A price with no screenshot is not verified.
+    automatic: true
+  - id: no_fabricated_price
+    description: >
+      No result marked "ok" appears without a numeric price_inr. A site
+      that couldn't be read is status "blocked"/"no_match"/"error", never
+      a guessed number.
+    automatic: true
+  - id: ranked_ascending
+    description: >
+      The "cheapest" list is sorted ascending by price and capped at 5.
+    automatic: true
+  - id: skipped_sites_explained
+    description: >
+      Every site not in the cheapest list has a non-empty note explaining
+      why (blocked, no match, error) — never silently dropped.
+    automatic: true
+  - id: timestamped
+    description: >
+      The report/response carries a checked_at timestamp no older than the
+      request itself (sanity: not from a stale cache).
+    automatic: true
+  - id: plausible_price
+    description: >
+      Reported price is a plausible order of magnitude for the category —
+      catches a heuristic grabbing an unrelated filter/promo number (e.g.
+      a ₹500 "under ₹500" nav link mistaken for a ₹50,000 laptop's price).
+      Automatic check is a coarse range/outlier flag only; judgment on
+      whether a specific number is actually right for actually is the
+      subagent's job.
+    automatic: true
+    subagent_follow_up: true
+  - id: variant_match
+    description: >
+      The matched listing is genuinely the same product/variant (or the
+      same hotel/dates/guests) asked about, not a similarly-named
+      substitute. Requires reading the title/context, not just presence of
+      a price — subagent-only.
+    automatic: false
+  - id: no_prohibited_action
+    description: >
+      Nothing in the run added to a cart, submitted a form, logged in, or
+      attempted to bypass a CAPTCHA/bot-check.
+    automatic: true
+
+product_only:
+  - id: category_site_list_used
+    description: >
+      The sites checked match the category's list in data/category_sites.yaml
+      (plus the origin site if a URL was given) — not an invented site.
+    automatic: true
+
+hotel_only:
+  - id: dates_and_guests_match
+    description: >
+      The rate shown corresponds to the requested check-in/check-out dates
+      and guest count, not a default/different search. Automatic check
+      confirms the request round-trips into the response; whether the
+      *site itself* actually priced those exact dates needs a human or
+      subagent glance at the screenshot.
+    automatic: true
+    subagent_follow_up: true
+
+pass_threshold: >
+  A run "passes" when every automatic criterion above is satisfied. A
+  run can still be flagged by the subagent even after passing every
+  automatic check (e.g. variant_match) — automatic pass is necessary, not
+  sufficient.

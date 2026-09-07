@@ -23,6 +23,7 @@ import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import urlparse
 
 from bs4 import BeautifulSoup
 from playwright.async_api import async_playwright
@@ -51,12 +52,53 @@ def _clean_price(raw: str) -> float | None:
         return None
 
 
-def _extract_top_price_and_link(html: str, base_url: str) -> tuple[float | None, str | None, str | None]:
-    """Very generic heuristic: scan the DOM in document order, return the
+def _extract_amazon_result(html: str) -> tuple[float | None, str | None, str | None]:
+    """Amazon's search-result markup (data-component-type="s-search-result")
+    has been stable for years, and the generic heuristic below reliably
+    grabbed the wrong number on amazon.in in testing (a nav/promo "under
+    ₹500" link, not the listing price) — worth a real selector for the
+    single most important site in the list, unlike the rest which stay
+    generic."""
+    soup = BeautifulSoup(html, "html.parser")
+    for card in soup.select('div[data-component-type="s-search-result"]'):
+        price_el = card.select_one("span.a-price span.a-offscreen") or card.select_one("span.a-price-whole")
+        if not price_el:
+            continue
+        m = re.search(r"([\d][\d,]{2,})", price_el.get_text(strip=True))
+        if not m:
+            continue
+        price = _clean_price(m.group(1))
+        if price is None:
+            continue
+        title_el = card.select_one("h2 a span") or card.select_one("h2 span")
+        link_el = card.select_one("h2 a") or card.select_one("a.a-link-normal")
+        return price, (link_el.get("href") if link_el else None), \
+            (title_el.get_text(strip=True) if title_el else None)
+    return None, None, None
+
+
+def _extract_top_price_and_link(html: str, base_url: str,
+                                  domain: str | None = None) -> tuple[float | None, str | None, str | None]:
+    """Generic heuristic: scan the DOM in document order, return the
     first ₹ price found together with the nearest enclosing/preceding <a>
     link and a short text snippet as a stand-in "title". Good enough for a
     demo, not a substitute for the real per-site verification the
-    ecommerce-deal-finder skill does with a live browser."""
+    ecommerce-deal-finder skill does with a live browser. Amazon gets a
+    tuned selector instead (see _extract_amazon_result) since it's the
+    single most-checked site and the generic heuristic misfired on it."""
+    if domain and "amazon" in domain:
+        price, link, title = _extract_amazon_result(html)
+        if price is not None:
+            return price, link, title
+        # fall through to the generic heuristic as a backup, not a guess
+
+    # Text that marks a match as a filter/sort/facet control rather than an
+    # actual listing (e.g. TataCliq's "Select All ₹0-₹1,000" price-range
+    # filter) — caught live in testing, so keep scanning past these instead
+    # of returning the first ₹ match found.
+    _DENYLIST = ("filter", "select all", "sort by", "clear all", "price range", "budget", "बजट")
+    _RANGE_RE = re.compile(r"₹\s?[\d][\d,.]*\s*[-–to]{1,4}\s*₹\s?[\d][\d,.]*")
+
     soup = BeautifulSoup(html, "html.parser")
     for el in soup.find_all(string=PRICE_RE):
         m = PRICE_RE.search(el)
@@ -69,6 +111,7 @@ def _extract_top_price_and_link(html: str, base_url: str) -> tuple[float | None,
         node = el.parent
         link = None
         title = None
+        full_text = ""
         for _ in range(6):
             if node is None:
                 break
@@ -77,8 +120,20 @@ def _extract_top_price_and_link(html: str, base_url: str) -> tuple[float | None,
             if title is None:
                 text = node.get_text(" ", strip=True)
                 if text and len(text) > 8 and "₹" not in text[:8]:
+                    full_text = text
                     title = text[:120]
             node = node.parent
+        if title and any(kw in title.lower() for kw in _DENYLIST):
+            continue  # looks like filter/sort chrome, not a listing — keep scanning
+        if full_text.count("₹") > 2:
+            # a real listing shows at most a sale + strikethrough MRP price;
+            # 3+ symbols in one snippet is a price-range slider/list of
+            # buckets (e.g. "Min ₹200 ₹300 ₹400 ₹500... to ₹200 ₹300...")
+            continue
+        if _RANGE_RE.search(full_text):
+            # "₹200 - ₹8,000+" style budget-slider text (caught live on
+            # Booking.com, including its Hindi-language variant)
+            continue
         return price, link, title
     return None, None, None
 
@@ -105,7 +160,7 @@ async def _check_one_product_site(context, domain: str, query: str, run_dir: Pat
         await page.screenshot(path=str(shot_path), full_page=False)
         result["screenshot"] = f"/screenshots/{run_dir.name}/{shot_path.name}"
 
-        price, link, title = _extract_top_price_and_link(html, url)
+        price, link, title = _extract_top_price_and_link(html, url, domain=domain)
         if price is None:
             lc = html.lower()
             if "captcha" in lc or "robot" in lc or "access denied" in lc:
@@ -184,17 +239,59 @@ def _log_price_history(rows: list[dict]):
             writer.writerow(r)
 
 
-async def run_product_search(browser, query: str, sites: list[str]) -> dict:
+async def resolve_origin(browser, url: str) -> tuple[dict, str | None]:
+    """Open a user-supplied product URL directly (mirrors step 1 of the
+    ecommerce-deal-finder skill): read its real title so category-matching
+    and the other sites' searches use the actual product name, not the raw
+    URL text, and grab its own price/screenshot as a confirmed data point."""
+    context = await browser.new_context(user_agent=UA, viewport={"width": 1280, "height": 900})
+    run_dir = _new_run_dir("origin")
+    page = await context.new_page()
+    domain = urlparse(url).netloc.replace("www.", "")
+    result = {"site": domain, "url": url, "status": "error", "price_inr": None,
+              "title": None, "product_url": url, "screenshot": None,
+              "note": "The link you provided."}
+    title_text = None
+    try:
+        await page.goto(url, timeout=NAV_TIMEOUT_MS, wait_until="domcontentloaded")
+        await page.wait_for_timeout(1500)
+        title_text = (await page.title() or "").strip() or None
+        html = await page.content()
+        shot_path = run_dir / "origin.png"
+        await page.screenshot(path=str(shot_path), full_page=False)
+        result["screenshot"] = f"/screenshots/{run_dir.name}/{shot_path.name}"
+        result["title"] = title_text[:150] if title_text else None
+
+        price, _, _ = _extract_top_price_and_link(html, url, domain=domain)
+        if price is not None:
+            result["status"] = "ok"
+            result["price_inr"] = price
+        else:
+            result["status"] = "no_match"
+            result["note"] = "The link you provided — no price detected automatically, open it to check."
+    except Exception as exc:  # noqa: BLE001
+        result["status"] = "error"
+        result["note"] = f"Could not load the link you provided ({type(exc).__name__})."
+    finally:
+        await page.close()
+        await context.close()
+    return result, title_text
+
+
+async def run_product_search(browser, query: str, sites: list[str],
+                               origin_result: dict | None = None) -> dict:
     context = await browser.new_context(user_agent=UA, viewport={"width": 1280, "height": 900})
     run_dir = _new_run_dir("product")
     tasks = [_check_one_product_site(context, d, query, run_dir) for d in sites]
     results = await asyncio.gather(*tasks)
     await context.close()
 
-    ok = [r for r in results if r["status"] == "ok"]
+    all_results = list(results) + ([origin_result] if origin_result else [])
+
+    ok = [r for r in all_results if r["status"] == "ok"]
     ok.sort(key=lambda r: r["price_inr"])
     cheapest = ok[:5]
-    others = [r for r in results if r["status"] != "ok"]
+    others = [r for r in all_results if r["status"] != "ok"]
 
     now = datetime.now(timezone.utc).isoformat()
     _log_price_history([

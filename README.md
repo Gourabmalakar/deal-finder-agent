@@ -4,8 +4,13 @@ An AI agent that finds the cheapest **verified** price for a product or a
 hotel room, across the sites that actually matter for that category, and
 shows its work — live screenshot, exact link, timestamp, price history.
 
-Full architecture and rules: [`CLAUDE.md`](CLAUDE.md). Exact output format
-for both modes: [`docs/REPORT-FORMATS.md`](docs/REPORT-FORMATS.md).
+Repo: https://github.com/Gourabmalakar/deal-finder-agent
+
+Full architecture and rules: [`CLAUDE.md`](CLAUDE.md). Deep-dive on both
+implementations, the eval system, and hosting:
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). Exact output format for
+both modes: [`docs/REPORT-FORMATS.md`](docs/REPORT-FORMATS.md). Live test
+results (bugs found and fixed, confirmed site blocks): [`docs/TESTING.md`](docs/TESTING.md).
 
 ## What this is (and isn't)
 
@@ -69,28 +74,46 @@ session's Browser tool does).
 `webapp/` is a real, runnable web app version — a FastAPI backend that
 drives a headless browser to check sites live, plus a frontend page — for
 testing outside of Claude Code. See [`webapp/README.md`](webapp/README.md)
-for setup and its known limitations (best-effort price extraction, not yet
-as reliable as the Claude Code skills above). Run it with:
+for setup, hosting it publicly (Render), and its known limitations
+(best-effort price extraction, not yet as reliable as the Claude Code
+skills above). Run it with:
 
 ```bash
 webapp/run.sh
 ```
 
-then open http://127.0.0.1:8000.
+then open http://127.0.0.1:8000. A `launchd` job alerts if it goes down —
+see `webapp/README.md`'s "Uptime alerts" section.
+
+## Evaluation
+
+Every search — from the skills or the webapp — is scored against
+[`evals/criteria.yaml`](evals/criteria.yaml). The webapp runs the
+automatic checks itself and logs every query to `data/evals.db`; the
+`deal-evaluator` subagent (`.claude/agents/deal-evaluator.md`) does the
+judgment-based checks a fixed rule can't, both at the end of every skill
+run and on demand over the webapp's history via `/review-evals`. Full
+design in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md#evaluation-system).
 
 ## Repo layout
 
 ```
 CLAUDE.md                        overall instructions and rules
+docs/ARCHITECTURE.md             both implementations, evals, hosting — the deep dive
 docs/REPORT-FORMATS.md           exact output contract for both modes
+docs/TESTING.md                  live test pass: bugs found/fixed, confirmed site blocks
+evals/criteria.yaml              pass/fail criteria both paths score against
 data/category_sites.yaml         top-5 sites per product category
 data/hotel_sites.yaml            default hotel/OTA sites checked
 data/price_history.csv           append-only log of every price this tool has verified
+data/evals.db                    shared SQLite eval log (webapp writes, deal-evaluator reads/writes)
 .claude/skills/                  the two workflows (ecommerce, hotel)
-.claude/agents/                  the two scout subagents
+.claude/agents/                  price-scout, hotel-scout, deal-evaluator
 .claude/hooks/                   intent-detection hook
-.claude/commands/                /find-deal and /find-hotel
+.claude/commands/                /find-deal, /find-hotel, /review-evals
 runs/                            scratch space for screenshots (gitignored)
+webapp/                          local FastAPI + Playwright webapp — see webapp/README.md
+render.yaml, webapp/Dockerfile   hosting config (Render)
 ```
 
 ## Maintaining the site lists

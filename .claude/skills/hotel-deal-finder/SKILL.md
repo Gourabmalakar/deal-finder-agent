@@ -61,6 +61,12 @@ For each candidate (aim for 5 confirmed rates):
   table and images (load `artifact-capabilities` first if using its asset
   store for the images).
 
+### 6. Evaluate before presenting
+- Spawn the `deal-evaluator` subagent with the compiled report and the raw
+  `hotel-scout` output. Wait for its verdict before showing anything to the
+  user. If it flags a failure (e.g. wrong property, dates don't match),
+  fix what you can before presenting rather than reporting a known-bad row.
+
 ## Guardrails
 - Never start a booking, never enter payment/traveler details, never create
   an account. This skill only reads public availability/price pages.

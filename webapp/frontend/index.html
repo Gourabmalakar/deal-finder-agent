@@ -329,6 +329,9 @@ function renderResults(container, data, kind){
   }
 
   let html = '';
+  if (kind === 'product' && data.resolved_query && data.origin_query && data.resolved_query !== data.origin_query){
+    html += `<p class="empty-hint" style="margin-bottom:14px">Opened your link and matched it as <strong style="color:var(--text)">${escapeHtml(data.resolved_query)}</strong> — searching other sites for that.</p>`;
+  }
   if (cheapest.length){
     html += `<div class="results-head"><h2>${cheapest.length} verified price${cheapest.length>1?'s':''} found</h2>
       <span class="meta">checked ${new Date(data.checked_at).toLocaleTimeString('en-IN')}</span></div>`;

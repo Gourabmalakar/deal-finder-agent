@@ -1,0 +1,4 @@
+{
+  "target_url": "http://127.0.0.1:8000/api/health",
+  "note": "Update target_url to the hosted URL's /api/health once deployed (see webapp/README.md's hosting section). check_uptime.py reads this file at run time."
+}

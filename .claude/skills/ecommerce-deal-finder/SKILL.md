@@ -75,6 +75,14 @@ For each candidate site (aim to end up with 5 confirmed prices):
   the artifact's asset store; load the `artifact-capabilities` skill first
   if you go this route).
 
+### 7. Evaluate before presenting
+- Spawn the `deal-evaluator` subagent with the compiled report and the raw
+  `price-scout` output. Wait for its verdict before showing anything to the
+  user. If it flags a failure (e.g. a variant mismatch, an implausible
+  price), fix what you can — drop the bad row, re-verify the page, or note
+  the caveat explicitly — rather than presenting a report you know failed
+  a check.
+
 ## Guardrails
 - Never add anything to a cart, never check out, never enter any account,
   payment, or address details anywhere. This skill only reads public pages.
