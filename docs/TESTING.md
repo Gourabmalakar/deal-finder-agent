@@ -1,5 +1,37 @@
 # Testing report — webapp scraper
 
+## Round 3 — confirming and honestly labeling the sites that block us (2026-09-08)
+
+Gourab asked to "fix the errors" showing up for myntra.com and
+nykaafashion.com (generic "Could not load page (Error)"). Investigated
+each independently of this app before deciding what, if anything, could
+legitimately be fixed:
+
+- **myntra.com**: a plain `curl` request to the same URL succeeds (HTTP
+  200), but our headless browser is rejected regardless of HTTP/1.1 or
+  HTTP/2 (tested both). This is bot-fingerprint detection specifically
+  targeting automated browsers, not a network or protocol issue — the
+  only way past it is stealth/evasion techniques (spoofing
+  `navigator.webdriver`, faking a GPU/canvas fingerprint, etc.), which
+  this project's own rules (CLAUDE.md §0.4) and this assistant's standing
+  rules both forbid. **Not fixed, by design.**
+- **nykaa.com / nykaafashion.com**: even a plain `curl` gets HTTP 403 —
+  blocks every client, not just automation. **Not fixable at all**
+  without impersonating a browser in ways this tool won't do.
+- **goibibo.com**: even a plain `curl` fails at the HTTP/2 protocol level
+  (`CURLE_HTTP2_STREAM_ERROR`) — a server-side issue affecting everyone,
+  not specific to headless browsers.
+
+What *was* genuinely fixable: the error message. These domains were
+previously reported as a bare `error` with no explanation
+("Could not load page (Error)."), indistinguishable from a real,
+possibly-fixable bug. **Fix**: a `_KNOWN_BLOCKED_DOMAINS` set (myntra.com,
+nykaa.com, nykaafashion.com, goibibo.com, makemytrip.com) now reports
+these specifically as `blocked` with an explanation naming the confirmed
+cause, instead of a generic error — so a real bug elsewhere doesn't get
+mistaken for "oh, that's just blocked", and the user isn't left guessing
+why a site never returns anything.
+
 ## Round 2 — bugs Gourab found using the app for real (2026-09-08)
 
 Round 1 below was this project's own test pass. Round 2 came from Gourab

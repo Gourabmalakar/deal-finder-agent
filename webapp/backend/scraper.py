@@ -108,6 +108,23 @@ def _extract_amazon_result(html: str, title_hint: str | None = None,
     return candidates[0]
 
 
+# Domains confirmed (independently of this app — see docs/TESTING.md) to
+# block automated browser connections outright: myntra.com rejects our
+# headless Chromium specifically while a plain `curl` to the same URL
+# succeeds (bot-fingerprint detection, not a network issue — not something
+# this tool will try to evade); nykaa.com/nykaafashion.com return HTTP 403
+# to curl too (blocks everyone); goibibo.com/makemytrip.com fail even a
+# plain curl at the HTTP/2 protocol level (a server-side issue, not
+# specific to us). Distinguishing this from a genuine transient failure
+# means a real bug elsewhere doesn't get dismissed as "oh, that's just
+# blocked" — and the user sees why, not a bare "(Error)".
+_KNOWN_BLOCKED_DOMAINS = {"myntra.com", "nykaa.com", "nykaafashion.com",
+                           "goibibo.com", "makemytrip.com"}
+_KNOWN_BLOCKED_NOTE = ("This site consistently blocks automated browser connections — "
+                        "confirmed independently of this tool (see docs/TESTING.md). "
+                        "Not something fixable without bypassing bot detection, which "
+                        "this tool won't do. Check the site directly.")
+
 _HOTEL_STOPWORDS = {"hotel", "hotels", "resort", "the", "inn", "suites", "and", "a", "an"}
 _HOTEL_NAME_HINTS = ("hotel", "resort", "inn", "suites", "villa", "palace", "residency")
 _PRODUCT_STOPWORDS = {"buy", "online", "best", "price", "for", "with", "the", "and",
@@ -346,8 +363,12 @@ async def _check_one_product_site(context, domain: str, query: str, run_dir: Pat
             result["product_url"] = _absolutize(link, url) or url
             result["note"] = "Best-effort match — confirm variant/seller before buying."
     except Exception as exc:  # noqa: BLE001
-        result["status"] = "error"
-        result["note"] = f"Could not load page ({type(exc).__name__})."
+        if domain in _KNOWN_BLOCKED_DOMAINS:
+            result["status"] = "blocked"
+            result["note"] = _KNOWN_BLOCKED_NOTE
+        else:
+            result["status"] = "error"
+            result["note"] = f"Could not load page ({type(exc).__name__})."
     finally:
         await page.close()
     return result
@@ -388,8 +409,12 @@ async def _check_one_hotel_site(context, domain: str, place: str, checkin: str,
             result["booking_url"] = _absolutize(link, url) or url
             result["note"] = "Best-effort match — confirm dates, taxes and cancellation on the site."
     except Exception as exc:  # noqa: BLE001
-        result["status"] = "error"
-        result["note"] = f"Could not load page ({type(exc).__name__})."
+        if domain in _KNOWN_BLOCKED_DOMAINS:
+            result["status"] = "blocked"
+            result["note"] = _KNOWN_BLOCKED_NOTE
+        else:
+            result["status"] = "error"
+            result["note"] = f"Could not load page ({type(exc).__name__})."
     finally:
         await page.close()
     return result
@@ -452,8 +477,12 @@ async def resolve_origin(browser, url: str) -> tuple[dict, str | None]:
             result["status"] = "no_match"
             result["note"] = "The link you provided — no price detected automatically, open it to check."
     except Exception as exc:  # noqa: BLE001
-        result["status"] = "error"
-        result["note"] = f"Could not load the link you provided ({type(exc).__name__})."
+        if domain in _KNOWN_BLOCKED_DOMAINS:
+            result["status"] = "blocked"
+            result["note"] = _KNOWN_BLOCKED_NOTE
+        else:
+            result["status"] = "error"
+            result["note"] = f"Could not load the link you provided ({type(exc).__name__})."
     finally:
         await page.close()
         await context.close()
