@@ -101,10 +101,8 @@ def _extract_amazon_result(html: str, title_hint: str | None = None,
     if not candidates:
         return None, None, None
     if require_hint_match and title_hint:
-        matched = [c for c in candidates if _title_matches(c[2], title_hint, hint_stopwords)]
-        if not matched:
-            return None, None, None
-        return min(matched, key=lambda c: c[0])
+        best = _pick_best_match(candidates, title_hint, hint_stopwords)
+        return best if best else (None, None, None)
     return candidates[0]
 
 
@@ -142,40 +140,89 @@ def _looks_like_specific_hotel(place: str) -> bool:
     return any(h in place.lower() for h in _HOTEL_NAME_HINTS)
 
 
+def _tokenize(text: str) -> list[str]:
+    """Word-tokenize for matching: drop apostrophes so "Levi's" and
+    "Levis" tokenize the same (fixes a real miss — see _title_matches),
+    but otherwise split on every non-alphanumeric character rather than
+    stripping it. That second part matters more than it looks: blanket-
+    stripping punctuation (an earlier version of this function did) turns
+    "3.7K" (a review count) into "37k" — which then coincidentally
+    contains the digit sequence "37" and falsely matched a search for
+    "Hotel Delhi 37" against an unrelated "Hotel Smart Plaza Delhi
+    Airport" listing, confirmed live. Tokenizing keeps "3" and "7k" as
+    separate words, so that collision can't happen."""
+    cleaned = text.lower().replace("'", "").replace("’", "")
+    return re.findall(r"[a-z0-9]+", cleaned)
+
+
 def _title_matches(title: str | None, hint: str, stopwords: set[str] = frozenset()) -> bool:
     """Does this candidate's title plausibly refer to `hint` (a product
-    name or a specific hotel)? Requires at least half of the hint's
-    distinctive (len>2, non-stopword) words to appear in the title —
-    catches "this is a totally different item/property" mismatches
-    without demanding an exact string match."""
+    name or a specific hotel)? Two regimes, because a hotel/short-product
+    name and a long SEO-stuffed title need different bars:
+
+    - Short hints (<=3 distinctive words, typical for a hotel name like
+      "Hotel Delhi 37"): require EVERY word, including numeric ones.
+      Confirmed live: dropping short numeric tokens (the old rule needed
+      len>2) let "Hotel Delhi 37" match an unrelated "Hotel Krone Delhi"
+      on the word "delhi" alone — a city name shared by hundreds of
+      listings.
+    - Long hints (verbose Amazon-style titles): at least half the words
+      (capped at 4 — a 20-word title shouldn't need half to show up
+      verbatim on a competitor's differently-worded listing), AND
+      specifically the first word (almost always the brand, by
+      convention) — confirmed live, word-count alone let an unrelated
+      "KUMB144" earbud match a boAt search on generic words like
+      "earbuds"/"bluetooth" alone.
+    """
     if not title:
         return False
-    # Strip punctuation entirely before comparing — confirmed live, a
-    # query for "Levis" was rejected against a real "LEVI'S" listing
-    # because the literal substring "levis" doesn't appear in "levi's"
-    # (the apostrophe breaks it). Squashing both sides the same way
-    # ("levi's" -> "levis") fixes this without losing real discrimination.
-    title_l = re.sub(r"[^a-z0-9]", "", title.lower())
-    hint_words = [w for w in re.findall(r"[a-zA-Z0-9]+", hint.lower())
-                  if len(w) > 2 and w not in stopwords]
+    title_tokens = set(_tokenize(title))
+    hint_words = [w for w in _tokenize(hint) if w not in stopwords and (len(w) > 2 or w.isdigit())]
     if not hint_words:
         return True  # nothing distinctive to check against (e.g. a bare city name)
-    matches = sum(1 for w in hint_words if w in title_l)
-    # Cap the bar at 4 matching words — a long, SEO-stuffed title (common
-    # on Amazon: 20+ words of attributes) shouldn't need HALF of them to
-    # show up verbatim on a competitor's differently-worded listing for
-    # the same product. Confirmed live: an uncapped ceil(n/2) rejected a
-    # genuine Flipkart match for a verbose Amazon-derived title.
+
+    if len(hint_words) <= 3:
+        return all(w in title_tokens for w in hint_words)
+
+    matches = sum(1 for w in hint_words if w in title_tokens)
     needed = min(max(1, (len(hint_words) + 1) // 2), 4)
     if matches < needed:
         return False
-    # A word-count threshold alone still passes on generic category words
-    # shared by every competing product ("earbuds", "bluetooth", "wireless")
-    # — confirmed live: an unrelated "KUMB144" earbud matched a boAt search
-    # this way. hint_words[0] is (by the brand-name-first convention nearly
-    # every listing follows) almost always the actual brand/property name,
-    # so require it specifically, not just enough generic words.
-    return hint_words[0] in title_l
+    return hint_words[0] in title_tokens
+
+
+def _pick_best_match(candidates: list[tuple[float, str | None, str | None]],
+                      hint: str, stopwords: set[str] = frozenset(),
+                      ) -> tuple[float, str | None, str | None] | None:
+    """Among candidates that pass _title_matches (the "close enough"
+    bar), prefer one that's an EXACT match — the brand plus every specific
+    model/serial NUMBER, not necessarily every descriptive word.
+    Benchmarked live against Google Shopping for "boAt Airdopes 141
+    earbuds": Google showed Amazon.in genuinely carries the exact
+    "Airdopes 141" model, but this tool's loose threshold was already
+    satisfied by a different model (163) it found first and never
+    checked whether a better, exact match existed on the same page.
+
+    Deliberately NOT requiring every hint word for "exact": a first
+    version did, and it backfired — requiring the literal word "earbuds"
+    rejected that same genuine "Airdopes 141" listing because Amazon
+    phrased it as "Ear Buds" (two words, a synonym), falling through to
+    the loose tier and losing to a cheaper, less-exact match anyway.
+    Numbers don't have that synonym problem (a model number is what it
+    is), so they stay mandatory for "exact"; other words don't.
+
+    Falls back to the loose match only when no exact one exists."""
+    hint_words = [w for w in _tokenize(hint) if w not in stopwords and (len(w) > 2 or w.isdigit())]
+    if hint_words:
+        must_have = [hint_words[0]] + [w for w in hint_words if w.isdigit()]
+        exact = [c for c in candidates
+                 if c[2] and all(w in set(_tokenize(c[2])) for w in must_have)]
+        if exact:
+            return min(exact, key=lambda c: c[0])
+    loose = [c for c in candidates if _title_matches(c[2], hint, stopwords)]
+    if loose:
+        return min(loose, key=lambda c: c[0])
+    return None
 
 
 def _extract_amazon_pdp_price(html: str) -> float | None:
@@ -212,6 +259,7 @@ def _extract_top_price_and_link(html: str, base_url: str, domain: str | None = N
                                   title_hint: str | None = None,
                                   hint_stopwords: set[str] = frozenset(),
                                   require_hint_match: bool = False,
+                                  page_title: str | None = None,
                                   ) -> tuple[float | None, str | None, str | None]:
     """Generic heuristic: scan the DOM for every plausible ₹ price
     (skipping filter/sort/range chrome), then pick a candidate — good
@@ -231,7 +279,20 @@ def _extract_top_price_and_link(html: str, base_url: str, domain: str | None = N
 
     Amazon gets a tuned selector instead of this heuristic entirely (see
     _extract_amazon_result) since it's the single most-checked site and
-    the generic heuristic misfired on it."""
+    the generic heuristic misfired on it.
+
+    `page_title` is accepted but deliberately NOT used to relax matching:
+    tried using it as a "the page's own title already confirms it" bypass
+    for named-hotel searches, but reverted — a hotel-search results page
+    (even one Google resolves to a specific-property detail panel) still
+    lists many OTHER properties in the same DOM (a sidebar, "similar
+    hotels"), so the page's title naming the right property doesn't mean
+    the first price found on it belongs to that property. Confirmed live:
+    this relaxation made Google Hotels return "Novotel New Delhi
+    Aerocity" for a "Hotel Delhi 37" search — reintroducing the exact
+    wrong-property bug the per-candidate check exists to prevent. Kept as
+    a parameter (unused) rather than removed, as a flag against trying
+    this same approach again without re-reading this note."""
     if domain and "amazon" in domain:
         price, link, title = _extract_amazon_result(
             html, title_hint=title_hint, hint_stopwords=hint_stopwords,
@@ -290,10 +351,8 @@ def _extract_top_price_and_link(html: str, base_url: str, domain: str | None = N
         return None, None, None
 
     if require_hint_match and title_hint:
-        matched = [c for c in candidates if _title_matches(c[2], title_hint, hint_stopwords)]
-        if not matched:
-            return None, None, None  # nothing on the page actually names it — don't guess
-        return min(matched, key=lambda c: c[0])
+        best = _pick_best_match(candidates, title_hint, hint_stopwords)
+        return best if best else (None, None, None)  # nothing on the page actually names it — don't guess
 
     return candidates[0]
 
@@ -383,6 +442,15 @@ async def _check_one_hotel_site(context, domain: str, place: str, checkin: str,
     try:
         await page.goto(url, timeout=NAV_TIMEOUT_MS, wait_until="domcontentloaded")
         await page.wait_for_timeout(2000)
+        # The tab's own <title> is a second, independent confirmation
+        # signal — when a site resolves a named-hotel search to a page
+        # specifically about that property (e.g. Google's own "Hotel
+        # Delhi 37 - Google hotels"), that's authored by the site itself,
+        # not inferred by our own snippet-matching guesswork. Not used for
+        # product search: a search-RESULTS page's title usually just
+        # echoes the query regardless of what's actually on it, which
+        # would make this check circular there.
+        page_title = await page.title()
         html = await page.content()
         shot_path = run_dir / f"{domain.replace('.', '_').replace('/', '_')}.png"
         await page.screenshot(path=str(shot_path), full_page=False)
@@ -391,6 +459,7 @@ async def _check_one_hotel_site(context, domain: str, place: str, checkin: str,
         price, link, title = _extract_top_price_and_link(
             html, url, title_hint=place, hint_stopwords=_HOTEL_STOPWORDS,
             require_hint_match=_looks_like_specific_hotel(place),
+            page_title=page_title,
         )
         if price is None:
             if _looks_blocked(html):

@@ -36,6 +36,23 @@ duplicate a stale copy of it here. In short:
    numbers like exactly 500/1000/1500, or a price wildly below/above the
    others for the same item), use WebSearch to spot-check a typical price
    range for that product/hotel.
+4. **aggregator_benchmark** (sample this periodically, not on every row —
+   it costs a live lookup): pick a query and check it against a real
+   aggregator.
+   - **Hotels**: trivial — Google Hotels is already one of the 5 sites
+     checked in the same run. Just compare this tool's Google Hotels
+     result against what the run itself shows; no extra lookup needed.
+   - **Products**: WebSearch or open `google.com/search?tbm=shop&q=<query>`.
+     Google Shopping mostly surfaces small merchant feeds this tool
+     doesn't target (see docs/ARCHITECTURE.md) — that's not a fair
+     comparison and isn't a fail. It IS a fair comparison, and worth
+     checking, whenever Google Shopping happens to list one of this
+     tool's own target sites (Amazon/Flipkart/TataCliq/Myntra/...) for the
+     same query: does this tool's result for that site name the same
+     specific model/variant Google confirms that site carries, and is the
+     price within roughly ±15%? A right-brand-wrong-model result that
+     could have been the exact model (see docs/TESTING.md Round 4) is a
+     real miss to flag, not a shrug.
 
 ## What to do with what you find
 - **For a skill run**: append your verdict as a short note the skill

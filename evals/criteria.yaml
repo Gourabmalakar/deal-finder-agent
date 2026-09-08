@@ -55,6 +55,27 @@ shared_criteria:
       Nothing in the run added to a cart, submitted a form, logged in, or
       attempted to bypass a CAPTCHA/bot-check.
     automatic: true
+  - id: aggregator_benchmark
+    description: >
+      For a sampled query, does this tool's result hold up against a real
+      price aggregator for the same query? Hotels: Google Hotels is
+      already one of the 5 sites checked, so its own displayed price on
+      that same run IS the benchmark — no extra lookup needed, just
+      compare. Products: no aggregator maps cleanly onto this tool's site
+      list in general (Google Shopping aggregates thousands of small
+      merchant feeds — see docs/ARCHITECTURE.md's "Benchmarking against
+      aggregators" — most of which aren't in data/category_sites.yaml),
+      but WHEN Google Shopping happens to list one of this tool's own
+      target sites (Amazon/Flipkart/TataCliq etc.) for the same query,
+      that IS a fair, direct comparison: check the specific model/variant
+      matches, and the price is in the same ballpark (roughly ±15%, prices
+      do genuinely fluctuate). A result that's the right brand but a
+      vaguer/different model than what the aggregator confirms that site
+      actually carries is a real miss, not a pass — see docs/TESTING.md
+      Round 4 for a worked example (a real bug this exposed and the fix).
+      Subagent-only: needs a live WebSearch/browser lookup, not a fixed rule.
+    automatic: false
+    subagent_follow_up: true
 
 product_only:
   - id: category_site_list_used

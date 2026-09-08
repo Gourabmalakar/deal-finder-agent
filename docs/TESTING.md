@@ -1,5 +1,77 @@
 # Testing report — webapp scraper
 
+## Round 4 — benchmarked against Google Shopping/Hotels, and a real accuracy bug fixed (2026-09-08)
+
+Gourab pushed back on Round 2/3's fixes: a named-hotel search was still
+matching the wrong property, and asked "how is Google doing it" — a fair
+challenge, so this round actually compared this tool's output against
+Google's own aggregators rather than assuming the fixes so far were
+enough.
+
+**What Google Shopping actually is, and why it's not a fair direct
+comparison for most queries**: searching "boAt Airdopes 141 earbuds" on
+Google Shopping returned ~30 listings from sellers like "Gadgets Now",
+"LowestRate Shopping", "Zepto", "dailydeals365.in", "Bharat COD",
+"Cashify" — none of which are in this tool's site list, and most of
+which are small resellers/marketplaces, not the major retailers (Amazon,
+Flipkart, Croma) this tool targets. Google Shopping is a **merchant
+product-feed aggregator** (Google Merchant Center) — thousands of sellers
+proactively submit structured data to it — not a live scraper of a fixed
+retailer list. It's a fundamentally different, much larger data source
+this tool can't replicate by "crawling better"; matching it would need
+either Google's own (paid) data or scraping a constantly-changing list of
+small marketplaces of uneven trustworthiness. Said plainly rather than
+implied.
+
+**Where a fair, direct comparison exists — and what it found**:
+
+- **Hotels**: Google Hotels is already one of the 5 sites this tool
+  checks, so its own displayed price *is* the benchmark, directly. "Hotel
+  Sepoy Grande" repeatedly came back matching Google's own visible price
+  exactly (₹1,300-1,406 across separate runs, normal dynamic-pricing
+  drift). This is already a real benchmark pass, not a claim.
+- **Products — a fair comparison exists where Google Shopping happens to
+  list the SAME major retailers**: for "LEVIS 512 mens jeans", Google
+  Shopping directly listed Amazon.in (₹1,216-1,359), Flipkart (₹1,199-
+  1,389) and tatacliq.com (₹1,838) for the "512" line. This tool's
+  Flipkart (₹1,342) and TataCliq (₹1,649) results landed within ~10-15%
+  of Google's — a genuine pass. **Amazon did not pass**: this tool
+  returned a vague "Levi's Men Jeans" (₹1,050) — correct brand, but not
+  the specific "512" line Google confirmed Amazon actually carries.
+
+**Root cause and fix**: the matching logic (Round 2/3) accepted any
+"close enough" same-brand match and stopped looking — it never checked
+whether a *better, exact* match (same specific model number) was
+available on the same page. Fixing this needed two attempts:
+1. First tried requiring every hint word (including generic descriptors
+   like "earbuds") for an "exact" tier. This backfired: Amazon's own
+   genuine "Airdopes 141" listing wrote it as "Ear Buds" (two words, a
+   synonym) and got rejected by the strict check, falling through to the
+   loose tier and losing to a *cheaper, less-exact* "Airdopes 163" match
+   instead — worse than before, caught by re-testing before considering
+   this done.
+2. **Fixed**: `_pick_best_match()` now requires only the brand (first
+   distinctive word) plus any specific model/serial NUMBERS for the
+   "exact" tier — numbers don't have a synonym problem, descriptive words
+   do. Falls back to the existing loose match only when no exact one
+   exists on the page.
+
+**Verified after the fix, against the same benchmark queries**:
+Amazon now returns "Levi's Men's 512 Slim Tapered Fit Blue Jeans" (the
+correct line) and, separately, "boAt Airdopes 141/8" — the exact model —
+alongside Flipkart's own exact "Airdopes 141 Gen 2" match. Repeated
+across multiple runs for consistency, and a full regression across every
+prior test case in this file confirmed no earlier fix was undone.
+
+**Also re-confirmed (see Round 2/3)**: the earlier fix for wrong-hotel
+matches (a "Hotel Delhi 37" search must never return a different
+property like "Novotel New Delhi Aerocity") still holds — a tempting
+"trust the page if its own `<title>` names the property" relaxation was
+tried here too, made things worse (the page's title naming the right
+hotel doesn't mean the *first price found on it* belongs to that hotel —
+these pages also list other properties), and was reverted. Documented in
+scraper.py so this dead end isn't retried without re-reading why.
+
 ## Round 3 — confirming and honestly labeling the sites that block us (2026-09-08)
 
 Gourab asked to "fix the errors" showing up for myntra.com and

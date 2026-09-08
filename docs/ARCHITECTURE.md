@@ -154,6 +154,41 @@ practice and which sites are affected.
 result_json, passed, failures_json, latency_s, subagent_reviewed,
 subagent_notes`.
 
+### Benchmarking against aggregators
+
+One eval criterion (`aggregator_benchmark` in `evals/criteria.yaml`) is
+worth explaining rather than just listing, because "why isn't this as
+good as Google" has a real, non-obvious answer:
+
+- **Hotels are a clean, direct comparison** — Google Hotels is already
+  one of the 5 sites this tool checks, so its own displayed price on the
+  same run *is* the benchmark. No separate lookup needed.
+- **Products mostly aren't a fair 1:1 comparison, and that's worth saying
+  plainly rather than implying this tool should match Google exactly.**
+  Google Shopping is a **merchant product-feed aggregator** (Google
+  Merchant Center) — thousands of sellers proactively submit structured
+  product data to it, and Google indexes and ranks that feed. It's not a
+  live scraper of a fixed retailer list the way this tool is. Checking
+  Google Shopping for "boAt Airdopes 141 earbuds" live (docs/TESTING.md
+  Round 4) returned listings almost entirely from small resellers
+  ("Gadgets Now", "LowestRate Shopping", "Zepto", "dailydeals365.in",
+  "Bharat COD") — none in `data/category_sites.yaml`, and several of
+  uneven trustworthiness a serious deal-finder shouldn't casually surface
+  anyway. Matching that data source isn't a crawler-quality problem to
+  fix; it would mean either licensing Google's own data or scraping a
+  constantly-shifting list of small marketplaces instead of major
+  retailers — a different tool, not a better-tuned version of this one.
+- **The comparison that DOES matter**: when Google Shopping happens to
+  list one of this tool's own target sites for the same query, that's a
+  fair, direct check — does this tool's result for that site name the
+  same specific model/variant, at a price in the same ballpark? Round 4
+  found and fixed a real gap this way: this tool was accepting a
+  same-brand-but-wrong-model match instead of holding out for an exact
+  one, even when the exact model was genuinely available on the same
+  page. `webapp/backend/scraper.py`'s `_pick_best_match()` now prefers an
+  exact match (brand + any specific model numbers) whenever one exists,
+  falling back to the looser match only when it doesn't.
+
 ## Uptime monitoring
 
 `webapp/scripts/check_uptime.py` hits `/api/health` (target URL in
