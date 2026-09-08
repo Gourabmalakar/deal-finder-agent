@@ -1,5 +1,68 @@
 # Testing report — webapp scraper
 
+## Round 5 — three more real bugs from actual use, plus site expansion (2026-09-08)
+
+Gourab reported: "iphone 17" matched a phone *case* on TataCliq and came
+back empty on Amazon; a hotel search only showed the Google Hotels link;
+and asked to widen site coverage (EaseMyTrip, Yatra, more trusted
+electronics sites) and asked directly "how are others doing it" re:
+avoiding scraper blocks. Investigated each rather than assuming:
+
+1. **TataCliq matched an iPhone 17 *case*, not the phone.** The brand+
+   model check (Round 4) doesn't know a "Gripp Slimfit Mag-Safe Case For
+   iPhone 17" isn't the phone itself — it shares the brand/model tokens.
+   **Fix**: `_is_accessory_mismatch()` rejects a candidate containing an
+   accessory word (case/cover/charger/tempered glass/...) when the search
+   itself wasn't for an accessory. Verified: TataCliq now correctly
+   returns `no_match` for a plain "iphone 17" search rather than the case.
+
+2. **Amazon returned no_match despite obviously stocking iPhone 17.**
+   Direct inspection found the exact "Apple iPhone 17 256 GB" card WAS on
+   the page — with **zero price text anywhere in the card**. Root cause,
+   confirmed by following the link: that specific listing (Lavender,
+   256GB) is marked **"Currently unavailable"** on Amazon right now — a
+   genuine out-of-stock, not a scraper bug. Along the way, added a real
+   improvement anyway: `_find_amazon_exact_match_link()` +
+   `_amazon_pdp_followup()` now follow through to a matching card's own
+   page when the results card shows no price, rather than giving up —
+   useful for the (more common) case where a card just doesn't display a
+   price on the results view but the product page has one.
+
+3. **Flipkart's price was wrong on a case Gourab could directly verify**:
+   he screenshotted the real Flipkart page showing ₹82,900, but this tool
+   reported ₹62,050. Root cause: Flipkart shows an "Upto ₹62,050 Off on
+   Exchange" badge as a separate nearby element — close enough that both
+   numbers land under the SAME 6-level-up title snippet (so a denylist
+   check against that shared, 160-char-truncated snippet never reaches
+   the word "exchange"), but at the wrong distance for the existing
+   >2-symbols/range checks to catch as a pair. **Fix**: a narrower,
+   closer-scoped check (just 3 ancestor levels, separate from the title
+   walk) now catches "exchange"/"cashback"/"instant discount" badges
+   specifically. Verified: Flipkart now returns ₹82,900, matching
+   Gourab's own screenshot exactly.
+
+**Site expansion**: verified two working additions to `hotel_sites.yaml`
+by actually filling out each site's real search form and reading the
+resulting URL (not guessed from convention) — **EaseMyTrip** (confirmed
+working, e.g. ₹2,000 for a Goa search) and **Yatra** (its search form
+works fine in a real browser, but the same headless-browser fingerprint
+block documented for myntra.com applies — confirmed via the same
+curl-succeeds-but-headless-fails test — so it's correctly labeled
+`blocked`, not silently dropped). **JioMart was investigated and NOT
+added**: every deep-linked URL (correctly encoded, matching a pattern
+independently confirmable via web search) returns a generic
+"couldn't find the page" — its homepage's "enter your pincode" prompt
+suggests it requires a location cookie/session established first, which
+needs more work than the time available justified. Documented rather
+than shipped as a template that would just silently fail every search.
+
+**On "how are others doing it" / avoiding blocks**: see
+`docs/ARCHITECTURE.md`'s "How real aggregators actually get their data"
+— the honest answer isn't a better crawler, it's that Google
+Shopping/Hotels, EaseMyTrip, and similar services mostly work from
+official merchant/OTA data feeds and partner APIs, not by scraping pages
+with a browser the way this tool does.
+
 ## Round 4 — benchmarked against Google Shopping/Hotels, and a real accuracy bug fixed (2026-09-08)
 
 Gourab pushed back on Round 2/3's fixes: a named-hotel search was still

@@ -107,17 +107,17 @@ def _extract_amazon_result(html: str, title_hint: str | None = None,
 
 
 # Domains confirmed (independently of this app — see docs/TESTING.md) to
-# block automated browser connections outright: myntra.com rejects our
-# headless Chromium specifically while a plain `curl` to the same URL
-# succeeds (bot-fingerprint detection, not a network issue — not something
-# this tool will try to evade); nykaa.com/nykaafashion.com return HTTP 403
-# to curl too (blocks everyone); goibibo.com/makemytrip.com fail even a
-# plain curl at the HTTP/2 protocol level (a server-side issue, not
-# specific to us). Distinguishing this from a genuine transient failure
-# means a real bug elsewhere doesn't get dismissed as "oh, that's just
-# blocked" — and the user sees why, not a bare "(Error)".
+# block automated browser connections outright: myntra.com and yatra.com
+# reject our headless Chromium specifically while a plain `curl` to the
+# same URL succeeds (bot-fingerprint detection, not a network issue — not
+# something this tool will try to evade); nykaa.com/nykaafashion.com
+# return HTTP 403 to curl too (blocks everyone); goibibo.com/makemytrip.com
+# fail even a plain curl at the HTTP/2 protocol level (a server-side
+# issue, not specific to us). Distinguishing this from a genuine transient
+# failure means a real bug elsewhere doesn't get dismissed as "oh, that's
+# just blocked" — and the user sees why, not a bare "(Error)".
 _KNOWN_BLOCKED_DOMAINS = {"myntra.com", "nykaa.com", "nykaafashion.com",
-                           "goibibo.com", "makemytrip.com"}
+                           "goibibo.com", "makemytrip.com", "yatra.com"}
 _KNOWN_BLOCKED_NOTE = ("This site consistently blocks automated browser connections — "
                         "confirmed independently of this tool (see docs/TESTING.md). "
                         "Not something fixable without bypassing bot detection, which "
@@ -127,6 +127,21 @@ _HOTEL_STOPWORDS = {"hotel", "hotels", "resort", "the", "inn", "suites", "and", 
 _HOTEL_NAME_HINTS = ("hotel", "resort", "inn", "suites", "villa", "palace", "residency")
 _PRODUCT_STOPWORDS = {"buy", "online", "best", "price", "for", "with", "the", "and",
                        "in", "india", "at", "shop", "shopping", "a", "an"}
+_ACCESSORY_WORDS = {"case", "cover", "protector", "tempered", "glass", "skin",
+                     "pouch", "strap", "charger", "cable", "screenguard",
+                     "bumper", "holder", "stand", "sticker", "adapter"}
+
+
+def _is_accessory_mismatch(title: str, hint: str) -> bool:
+    """True when `title` is an accessory (case/cover/charger/...) FOR the
+    thing being searched, but the search itself wasn't for an accessory.
+    Confirmed live: searching plain "iphone 17" matched a TataCliq listing
+    for a "Gripp Slimfit Mag-Safe Case For iPhone 17 Back Cover" ahead of
+    the phone itself — the brand+model check alone can't tell a case isn't
+    the device. Only rejects when the hint itself doesn't ALSO ask for an
+    accessory (so "iphone 17 case" still matches normally)."""
+    hit = _ACCESSORY_WORDS & set(_tokenize(title))
+    return bool(hit) and not (_ACCESSORY_WORDS & set(_tokenize(hint)))
 
 
 def _looks_like_specific_hotel(place: str) -> bool:
@@ -176,6 +191,8 @@ def _title_matches(title: str | None, hint: str, stopwords: set[str] = frozenset
     """
     if not title:
         return False
+    if _is_accessory_mismatch(title, hint):
+        return False
     title_tokens = set(_tokenize(title))
     hint_words = [w for w in _tokenize(hint) if w not in stopwords and (len(w) > 2 or w.isdigit())]
     if not hint_words:
@@ -216,7 +233,8 @@ def _pick_best_match(candidates: list[tuple[float, str | None, str | None]],
     if hint_words:
         must_have = [hint_words[0]] + [w for w in hint_words if w.isdigit()]
         exact = [c for c in candidates
-                 if c[2] and all(w in set(_tokenize(c[2])) for w in must_have)]
+                 if c[2] and not _is_accessory_mismatch(c[2], hint)
+                 and all(w in set(_tokenize(c[2])) for w in must_have)]
         if exact:
             return min(exact, key=lambda c: c[0])
     loose = [c for c in candidates if _title_matches(c[2], hint, stopwords)]
@@ -253,6 +271,57 @@ def _extract_amazon_pdp_price(html: str) -> float | None:
                 if price is not None:
                     return price
     return None
+
+
+def _find_amazon_exact_match_link(html: str, hint: str, stopwords: set[str] = frozenset()) -> str | None:
+    """Some Amazon search-result cards for the exact product show NO price
+    at all anywhere in the card (confirmed live: searching "iphone 17"
+    found two cards literally titled "Apple iPhone 17 256 GB..." — an
+    exact match — with zero ₹ mentions in either card's full text; Amazon
+    defers to a "choose options" flow instead of one card price for some
+    new/high-variant listings). Rather than reporting no_match when the
+    right product IS on the page, find its link so the caller can follow
+    through to the product page itself and read the real price there."""
+    soup = BeautifulSoup(html, "html.parser")
+    hint_words = [w for w in _tokenize(hint) if w not in stopwords and (len(w) > 2 or w.isdigit())]
+    if not hint_words:
+        return None
+    must_have = [hint_words[0]] + [w for w in hint_words if w.isdigit()]
+    for card in soup.select('div[data-component-type="s-search-result"]'):
+        img = card.select_one("img[alt]")
+        title = img.get("alt") if img else None
+        if not title or _is_accessory_mismatch(title, hint):
+            continue
+        if all(w in set(_tokenize(title)) for w in must_have):
+            link_el = card.select_one('a.a-link-normal[href*="/dp/"]') or card.select_one("h2 a")
+            if link_el and link_el.get("href"):
+                return link_el.get("href")
+    return None
+
+
+async def _amazon_pdp_followup(context, base_url: str, link: str, run_dir: Path) -> dict:
+    """Navigate to a product page found by _find_amazon_exact_match_link
+    and read its real price + a fresh screenshot (proof of the page the
+    price actually came from, not the search-results page that had none)."""
+    full_url = _absolutize(link, base_url)
+    result = {"price": None, "title": None, "url": full_url, "screenshot": None}
+    if not full_url:
+        return result
+    page = await context.new_page()
+    try:
+        await page.goto(full_url, timeout=NAV_TIMEOUT_MS, wait_until="domcontentloaded")
+        await page.wait_for_timeout(1200)
+        html = await page.content()
+        result["price"] = _extract_amazon_pdp_price(html)
+        result["title"] = (await page.title() or "").strip()[:150] or None
+        shot_path = run_dir / "amazon_in_followup.png"
+        await page.screenshot(path=str(shot_path), full_page=False)
+        result["screenshot"] = f"/screenshots/{run_dir.name}/{shot_path.name}"
+    except Exception:  # noqa: BLE001
+        pass
+    finally:
+        await page.close()
+    return result
 
 
 def _extract_top_price_and_link(html: str, base_url: str, domain: str | None = None,
@@ -306,7 +375,14 @@ def _extract_top_price_and_link(html: str, base_url: str, domain: str | None = N
     # actual listing (e.g. TataCliq's "Select All ₹0-₹1,000" price-range
     # filter) — caught live in testing, so keep scanning past these instead
     # of returning the first ₹ match found.
-    _DENYLIST = ("filter", "select all", "sort by", "clear all", "price range", "budget", "बजट")
+    # "exchange" added after a real miss: Flipkart shows an "Upto ₹62,050
+    # Off on Exchange" badge as a text node near the real "₹82,900" price
+    # — separate enough in the DOM that the two didn't land in the same
+    # >2-symbols/range check, so the (lower, wrong) exchange amount was
+    # extracted as if it were the price. Confirmed against the user's own
+    # screenshot showing the real Flipkart price was ₹82,900, not ₹62,050.
+    _DENYLIST = ("filter", "select all", "sort by", "clear all", "price range",
+                 "budget", "बजट", "exchange", "cashback", "instant discount")
     _RANGE_RE = re.compile(r"₹\s?[\d][\d,.]*\s*[-–to]{1,4}\s*₹\s?[\d][\d,.]*")
 
     soup = BeautifulSoup(html, "html.parser")
@@ -318,6 +394,26 @@ def _extract_top_price_and_link(html: str, base_url: str, domain: str | None = N
         price = _clean_price(m.group(1))
         if price is None or price < 50:  # filter noise like "₹5 off"
             continue
+
+        # A NARROW check first, just the closest 3 ancestors: catches a
+        # badge like "Upto ₹62,050 Off on Exchange" that sits right next
+        # to the real price ("₹82,900") as a sibling-ish element — close
+        # enough that both share the SAME 6-level-up title snippet below
+        # (so a denylist check against that shared, truncated-at-160-char
+        # title never sees the word "exchange" at all), but distinct at
+        # this narrower distance. Confirmed live: without this, Flipkart's
+        # exchange-bonus figure was extracted as if it were the price,
+        # confirmed wrong against the user's own screenshot.
+        close_text = ""
+        n = el.parent
+        for _ in range(3):
+            if n is None:
+                break
+            close_text += " " + n.get_text(" ", strip=True)
+            n = n.parent
+        if any(kw in close_text.lower() for kw in ("exchange", "cashback", "instant discount")):
+            continue
+
         # walk up to find an enclosing link and a plausible title
         node = el.parent
         link = None
@@ -408,6 +504,22 @@ async def _check_one_product_site(context, domain: str, query: str, run_dir: Pat
             html, url, domain=domain, title_hint=query,
             hint_stopwords=_PRODUCT_STOPWORDS, require_hint_match=True,
         )
+
+        followed_up = False
+        if price is None and domain and "amazon" in domain:
+            # The exact product may be on the page with no card-level
+            # price at all (confirmed live — see _find_amazon_exact_match_link).
+            # Follow through to its own page rather than reporting no_match
+            # when the right item is genuinely right there.
+            follow_link = _find_amazon_exact_match_link(html, query, _PRODUCT_STOPWORDS)
+            if follow_link:
+                followup = await _amazon_pdp_followup(context, url, follow_link, run_dir)
+                if followup["price"] is not None:
+                    price, link, title = followup["price"], follow_link, followup["title"]
+                    followed_up = True
+                    if followup["screenshot"]:
+                        result["screenshot"] = followup["screenshot"]
+
         if price is None:
             if _looks_blocked(html):
                 result["status"] = "blocked"
@@ -420,7 +532,12 @@ async def _check_one_product_site(context, domain: str, query: str, run_dir: Pat
             result["price_inr"] = price
             result["title"] = title or query
             result["product_url"] = _absolutize(link, url) or url
-            result["note"] = "Best-effort match — confirm variant/seller before buying."
+            result["note"] = (
+                "No price shown on the search results card for this exact listing — "
+                "followed the link to its own page instead."
+                if followed_up else
+                "Best-effort match — confirm variant/seller before buying."
+            )
     except Exception as exc:  # noqa: BLE001
         if domain in _KNOWN_BLOCKED_DOMAINS:
             result["status"] = "blocked"

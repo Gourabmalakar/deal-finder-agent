@@ -22,6 +22,12 @@ sites:
   - name: Goibibo
     domain: goibibo.com
     kind: ota
+  - name: EaseMyTrip
+    domain: easemytrip.com
+    kind: ota
+  - name: Yatra
+    domain: yatra.com
+    kind: ota
 
 on_user_supplied_links: >
   If the user gives direct links (e.g. a specific Booking.com or MakeMyTrip

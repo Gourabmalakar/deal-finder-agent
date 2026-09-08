@@ -189,6 +189,42 @@ good as Google" has a real, non-obvious answer:
   exact match (brand + any specific model numbers) whenever one exists,
   falling back to the looser match only when it doesn't.
 
+## How real aggregators actually get their data
+
+Worth answering directly, because "your scraper isn't as good as Google"
+invites the wrong fix. The honest answer isn't "scrape harder":
+
+- **Google Shopping** is a merchant product-feed aggregator (Google
+  Merchant Center) — sellers proactively submit structured product data
+  (price, stock, images) to Google on a schedule; Google doesn't scrape
+  their pages to get it. That's why it surfaces small resellers this tool
+  never will, and why an exact 1:1 comparison usually isn't fair (see
+  "Benchmarking against aggregators" above).
+- **Google Hotels** and OTAs like **EaseMyTrip, Yatra, Booking.com,
+  MakeMyTrip** run on GDS (Global Distribution System) connections and
+  direct hotel-chain/channel-manager integrations, or on their own
+  first-party inventory — not by rendering competitor sites in a browser.
+- **Price-comparison sites and browser extensions** (PriceHistory.app,
+  BuyHatke, Honey-style tools) that DO scrape typically do it through
+  **official affiliate/partner APIs**: Amazon's Product Advertising API,
+  Flipkart's Affiliate API, Booking.com's Affiliate Partner Program, etc.
+  These are sanctioned, rate-limited, structured data feeds — the sites
+  WANT this traffic because affiliate links earn them a commission — as
+  opposed to an unannounced headless browser pretending to be a regular
+  visitor, which is what trips the fingerprint detection documented in
+  `docs/TESTING.md` (myntra.com, yatra.com, and others).
+
+**What this means for this tool going forward**: the sustainable way to
+close the remaining gaps (Myntra, Nykaa, Goibibo, MakeMyTrip, JioMart) is
+signing up for these sites' own affiliate/partner programs and using
+their real APIs — not a cleverer scraper, and not evasion techniques,
+which this project's rules (`CLAUDE.md` §0.4) rule out regardless. That
+signup has to be Gourab's own — account creation isn't something this
+assistant does on his behalf — but once an API key exists for a given
+site, wiring it into `webapp/backend/scraper.py` as an alternative to the
+browser-scraping path for that domain is a well-scoped, valuable next
+step.
+
 ## Uptime monitoring
 
 `webapp/scripts/check_uptime.py` hits `/api/health` (target URL in
