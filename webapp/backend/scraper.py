@@ -633,8 +633,69 @@ async def _check_one_product_site(context, domain: str, query: str, run_dir: Pat
     return result
 
 
+def _extract_google_hotel_offers(html: str) -> list[dict]:
+    """Pull the per-provider offer list out of a Google Hotels property
+    page — the single highest-value thing on it, and previously thrown
+    away entirely.
+
+    When Google resolves a search to one specific hotel, its panel lists
+    that hotel's price at each booking provider, each as a link:
+
+        Skyscanner      ₹1,931   Visit site
+        MakeMyTrip.com  ₹2,076   Visit site
+        Official Site   ₹2,646   Visit site
+        EaseMyTrip.com  ₹1,891   Visit site
+
+    That's several genuinely comparable prices with booking links from
+    ONE page load — including providers (MakeMyTrip, Goibibo, Agoda) that
+    block this tool's own headless browser outright, so their prices are
+    otherwise unreachable. Extracting one number from this page and
+    discarding the rest was why a pasted hotel link came back with
+    nothing to compare against.
+
+    The "ends with 'Visit site'" test is what separates these from the
+    sponsored ads for OTHER hotels elsewhere on the page, which end with
+    "Visit Booking.com" / "Visit Agoda" instead (verified live)."""
+    soup = BeautifulSoup(html, "html.parser")
+    offers: dict[str, dict] = {}
+    for a in soup.find_all("a", href=True):
+        text = a.get_text("\n", strip=True)
+        if not text or "₹" not in text:
+            continue
+        lines = [ln.strip() for ln in text.split("\n") if ln.strip()]
+        if not lines or lines[-1].lower() != "visit site":
+            continue  # a sponsored ad for a different property, or not an offer row
+
+        m = PRICE_RE.search(text)
+        if not m:
+            continue
+        price = _clean_price(m.group(1))
+        if price is None or price < 50:
+            continue
+
+        if "official site" in text.lower():
+            provider = "Official site"
+        else:
+            provider = lines[0]
+        provider = provider.strip(" ·")[:40]
+        if not provider:
+            continue
+
+        # Same provider can appear twice (a featured/sponsored placement
+        # plus its normal row) — keep the cheaper.
+        existing = offers.get(provider.lower())
+        if existing and existing["price_inr"] <= price:
+            continue
+        offers[provider.lower()] = {
+            "provider": provider,
+            "price_inr": price,
+            "link": a.get("href"),
+        }
+    return sorted(offers.values(), key=lambda o: o["price_inr"])
+
+
 async def _check_one_hotel_site(context, domain: str, place: str, checkin: str,
-                                 checkout: str, guests: int, run_dir: Path) -> dict:
+                                 checkout: str, guests: int, run_dir: Path) -> list[dict]:
     url = hotel_search_url(domain, place, checkin, checkout, guests)
     page = await context.new_page()
     result = {"site": domain, "url": url, "status": "error", "price_inr": None,
@@ -669,6 +730,27 @@ async def _check_one_hotel_site(context, domain: str, place: str, checkin: str,
         await page.screenshot(path=str(shot_path), full_page=False)
         result["screenshot"] = f"/screenshots/{run_dir.name}/{shot_path.name}"
 
+        # Google's property panel carries several providers' prices for
+        # this exact hotel, each with a booking link — strictly more
+        # useful than the single headline number the generic extractor
+        # would pull off the same page, so prefer it when present.
+        if "google.com/travel/hotels" in domain:
+            offers = _extract_google_hotel_offers(html)
+            if offers:
+                return [{
+                    "site": o["provider"],
+                    "url": url,
+                    "status": "ok",
+                    "price_inr": o["price_inr"],
+                    "title": page_title.replace(" - Google hotels", "").strip() or place,
+                    "booking_url": _absolutize(o["link"], "https://www.google.com/") or url,
+                    "screenshot": result["screenshot"],
+                    "note": ("Google's own listed price for this property, for its default "
+                             "1-night stay — verified live that Google ignores requested "
+                             "check-in/check-out params, so this is NOT priced for your "
+                             "dates. Open the link to price them."),
+                } for o in offers[:5]]
+
         price, link, title = _extract_top_price_and_link(
             html, url, title_hint=place, hint_stopwords=_HOTEL_STOPWORDS,
             require_hint_match=_looks_like_specific_hotel(place),
@@ -699,7 +781,7 @@ async def _check_one_hotel_site(context, domain: str, place: str, checkin: str,
             result["note"] = f"Could not load page ({type(exc).__name__})."
     finally:
         await page.close()
-    return result
+    return [result]
 
 
 def _new_run_dir(prefix: str) -> Path:
@@ -721,6 +803,26 @@ def _log_price_history(rows: list[dict]):
             writer.writerow(r)
 
 
+_TITLE_BRANDING_RE = re.compile(
+    r"\s*[-|·–:]\s*(google hotels?|google|booking\.com[^|]*|makemytrip[^|]*|agoda[^|]*|"
+    r"goibibo[^|]*|easemytrip[^|]*|yatra[^|]*|trip\.com[^|]*|expedia[^|]*|hotels\.com[^|]*)\s*$",
+    re.I,
+)
+
+
+def _clean_place_title(title: str) -> str:
+    """Strip a site's own branding off a page title before using it as the
+    name to search other sites with. Confirmed live: a pasted Google
+    Hotels link resolved to "Hotel Rio Meridian - Google hotels", and
+    searching other sites for THAT (branding included) matched nothing."""
+    out = title.strip()
+    prev = None
+    while prev != out:
+        prev = out
+        out = _TITLE_BRANDING_RE.sub("", out).strip()
+    return out or title.strip()
+
+
 def _guess_place_from_url(url: str) -> str | None:
     """A hotel search-results page's own <title> tends to be marketing
     copy wrapped around the actual query ("Booking.com: खोज नतीजे: Hotel
@@ -737,7 +839,7 @@ def _guess_place_from_url(url: str) -> str | None:
     return None
 
 
-async def resolve_hotel_origin(browser, url: str) -> tuple[dict, str | None]:
+async def resolve_hotel_origin(browser, url: str) -> tuple[list[dict], str | None]:
     """Open a user-supplied hotel/booking-page URL directly — the hotel
     equivalent of resolve_origin() for products. Reads the page's own
     title (so other sites get searched by the real property name, not the
@@ -764,6 +866,31 @@ async def resolve_hotel_origin(browser, url: str) -> tuple[dict, str | None]:
         await page.screenshot(path=str(shot_path), full_page=False)
         result["screenshot"] = f"/screenshots/{run_dir.name}/{shot_path.name}"
         result["title"] = title_text[:150] if title_text else None
+        clean_title = _clean_place_title(title_text) if title_text else None
+
+        # Pasting a Google Hotels link is the best case, not a dead end:
+        # that page lists every provider's price for the property. Return
+        # them all rather than one number off the same page (which is what
+        # made a pasted link come back with nothing to compare against).
+        if "google." in domain and "/travel/" in url:
+            offers = _extract_google_hotel_offers(html)
+            if offers:
+                origin_rows = [{
+                    "site": o["provider"],
+                    "url": url,
+                    "status": "ok",
+                    "price_inr": o["price_inr"],
+                    "title": clean_title or url,
+                    "booking_url": _absolutize(o["link"], "https://www.google.com/") or url,
+                    "screenshot": result["screenshot"],
+                    "note": ("Google's own listed price for the link you gave, for its default "
+                             "1-night stay — verified live that Google ignores requested "
+                             "check-in/check-out params, so this is NOT priced for your "
+                             "dates. Open the link to price them."),
+                } for o in offers[:5]]
+                await page.close()
+                await context.close()
+                return origin_rows, clean_title
 
         price, _, _ = _extract_top_price_and_link(html, url, domain=domain)
         if price is not None:
@@ -780,12 +907,14 @@ async def resolve_hotel_origin(browser, url: str) -> tuple[dict, str | None]:
             result["status"] = "error"
             result["note"] = f"Could not load the link you provided ({type(exc).__name__})."
     finally:
-        await page.close()
-        await context.close()
+        if not page.is_closed():
+            await page.close()
+            await context.close()
     # Prefer the URL's own query param over the page <title> for the name
-    # used to search OTHER sites — see _guess_place_from_url's docstring.
-    resolved_place = _guess_place_from_url(url) or title_text
-    return result, resolved_place
+    # used to search OTHER sites — see _guess_place_from_url's docstring,
+    # and strip the site's own branding off the title (_clean_place_title).
+    resolved_place = _guess_place_from_url(url) or (_clean_place_title(title_text) if title_text else None)
+    return [result], resolved_place
 
 
 async def resolve_origin(browser, url: str) -> tuple[dict, str | None]:
@@ -869,14 +998,17 @@ async def run_product_search(browser, query: str, sites: list[str],
 
 async def run_hotel_search(browser, place: str, checkin: str, checkout: str,
                             guests: int, sites: list[str],
-                            origin_result: dict | None = None) -> dict:
+                            origin_results: list[dict] | None = None) -> dict:
     context = await browser.new_context(user_agent=UA, viewport={"width": 1280, "height": 900})
     run_dir = _new_run_dir("hotel")
     tasks = [_check_one_hotel_site(context, d, place, checkin, checkout, guests, run_dir) for d in sites]
-    results = await asyncio.gather(*tasks)
+    per_site = await asyncio.gather(*tasks)
     await context.close()
 
-    all_results = list(results) + ([origin_result] if origin_result else [])
+    # Each site returns a LIST now — Google Hotels contributes one row per
+    # booking provider it lists for the property, not just one row total.
+    results = [r for rows in per_site for r in rows]
+    all_results = results + list(origin_results or [])
 
     ok = [r for r in all_results if r["status"] == "ok"]
     ok.sort(key=lambda r: r["price_inr"])

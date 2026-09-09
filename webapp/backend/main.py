@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import time
+from urllib.parse import urlparse
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -133,22 +134,28 @@ async def hotel_search(body: HotelQuery):
     raw_place = body.place.strip()
     browser = _state["browser"]
 
-    origin_result = None
+    origin_results: list[dict] = []
+    origin_domain = None
     place = raw_place
     if raw_place.lower().startswith(("http://", "https://")):
-        origin_result, resolved_title = await scraper.resolve_hotel_origin(browser, raw_place)
+        origin_results, resolved_title = await scraper.resolve_hotel_origin(browser, raw_place)
         if resolved_title:
             place = resolved_title
+        origin_domain = urlparse(raw_place).netloc.replace("www.", "")
 
     hotel_catalog = load_hotel_sites()
     sites = [s["domain"] for s in hotel_catalog["sites"]]
-    if origin_result:
-        # don't re-search the site the user's own link already came from
-        sites = [s for s in sites if s != origin_result["site"]]
+    if origin_domain:
+        # Don't re-search the site the user's own link already came from.
+        # Compare on the bare domain so a site listed with a path
+        # ("google.com/travel/hotels") still matches an origin on
+        # google.com — otherwise a pasted Google link gets checked twice
+        # and the run comes back as two rows of the same page.
+        sites = [s for s in sites if s.split("/")[0] != origin_domain]
 
     result = await scraper.run_hotel_search(
         browser, place, body.checkin, body.checkout, body.guests, sites,
-        origin_result=origin_result,
+        origin_results=origin_results,
     )
     result["sites_checked"] = sites
     result["origin_place"] = raw_place

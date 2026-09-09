@@ -1,5 +1,82 @@
 # Testing report — webapp scraper
 
+## Round 7 — the actual fix: use Google's own provider list (2026-09-09)
+
+Gourab: pasting a hotel URL returned that same page back and no prices
+from anywhere else — "this is not working as expected... it should find
+me the other cheapest options."
+
+**Root cause was architectural, not another matching bug.** The design
+assumed we could independently scrape 7 OTA sites; in practice 5 of them
+are unusable (makemytrip/goibibo/yatra hard-block our headless browser,
+agoda's URL never reaches results, easemytrip only resolves cities). That
+leaves Google Hotels + Booking.com — and if the pasted link IS the Google
+page, the run returns one row: the page you started from. Reproduced
+exactly before changing anything.
+
+**The fix**: Google's property page *already contains* the price
+comparison — it lists each booking provider's price for that exact hotel,
+each as a link:
+
+```
+Skyscanner      ₹1,931   Visit site
+MakeMyTrip.com  ₹2,076   Visit site
+Official Site   ₹2,646   Visit site
+EaseMyTrip.com  ₹1,891   Visit site
+```
+
+We were loading that page every time and discarding all of it except one
+number. `_extract_google_hotel_offers()` now parses those rows, and each
+becomes its own result with its own booking link. Crucially this
+surfaces prices from **MakeMyTrip, Goibibo, Yatra and EaseMyTrip —
+providers that block this tool's own scraper outright**, so their prices
+were otherwise unreachable by any means available here.
+
+The `ends with "Visit site"` test is what separates real offers from the
+sponsored ads for *other* hotels elsewhere on the page, which end with
+"Visit Booking.com" / "Visit Agoda" (verified against live markup).
+
+Pasting a Google Hotels link now takes the same path (`resolve_hotel_origin`
+extracts the offers directly), and `_clean_place_title()` strips site
+branding — a pasted link previously resolved to "Hotel Rio Meridian -
+Google hotels" and searching other sites for *that* matched nothing.
+
+**Results across the full matrix** (all verified live):
+
+| Search | Before | After |
+|---|---|---|
+| Pasted Google Hotels URL | 2 rows, both the same Google page | **5** providers w/ links |
+| Pasted Booking.com URL | 2 | **5** |
+| Hotel Rio Meridian | 1 | **5** (EaseMyTrip, Yatra, Skyscanner, Cleartrip, Goibibo) |
+| Marina Bay Sands (international) | 2 | **5** (Official, EaseMyTrip, Billabook, AirAsia MOVE, Wego) |
+| Taj Mahal Palace Mumbai | 2 | **5**, and now the actual Palace, not the Tower |
+| Hotel Sepoy Grande | 1 | **5** (Official ₹1,584, Agoda ₹1,617, …) |
+| Hotel Delhi 37 | **0** for four rounds | **5** (Official ₹2,624, EaseMyTrip ₹2,913, MakeMyTrip ₹3,749, …) |
+| Goa (generic city) | 2-3 | 2-3, unchanged (a city search has no single-property panel) |
+
+Booking links were verified end-to-end, not assumed: following one
+resolved to a real `agoda.com` booking page carrying
+`pricetotal=1616.51` — matching the ₹1,617 reported for that row.
+
+### Known limitation found while verifying, and NOT papered over
+
+Following that link also revealed it landed on `checkin=2026-09-09` —
+**Google's default dates, not the requested ones.** Tested directly:
+passing `?checkin=/&checkout=` to Google Hotels changes nothing (the
+date widget stays on today→tomorrow and every offer price is byte-identical
+across three wildly different date ranges, including peak-season). So
+**Google's offer prices are for its own default 1-night stay, not your
+dates.** Every such row now says exactly that in its note, rather than
+being presented as a price for the requested dates.
+
+Google encodes dates in a protobuf `ts=` URL param. It decodes cleanly in
+structure (nested year/month/day pairs) but the captured sample didn't
+verify (year came out 2025 for a 2026 date), so it was **deliberately not
+hand-rolled** — a silently-wrong date encoding would produce confidently
+wrong prices, which is worse than a disclosed limitation. The
+direct-site rows (Booking.com, EaseMyTrip) *do* use the real requested
+dates; the Google-sourced rows are labelled.
+
 ## Round 6 — hotel search root-caused properly, tested domestic + international (2026-09-09)
 
 Gourab reported the hotel search still often only showed a single Google
