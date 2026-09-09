@@ -23,7 +23,7 @@ import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import urlparse, parse_qs, unquote_plus
 
 from bs4 import BeautifulSoup
 from playwright.async_api import async_playwright
@@ -170,7 +170,8 @@ def _tokenize(text: str) -> list[str]:
     return re.findall(r"[a-z0-9]+", cleaned)
 
 
-def _title_matches(title: str | None, hint: str, stopwords: set[str] = frozenset()) -> bool:
+def _title_matches(title: str | None, hint: str, stopwords: set[str] = frozenset(),
+                    require_dominant: bool = False) -> bool:
     """Does this candidate's title plausibly refer to `hint` (a product
     name or a specific hotel)? Two regimes, because a hotel/short-product
     name and a long SEO-stuffed title need different bars:
@@ -193,10 +194,26 @@ def _title_matches(title: str | None, hint: str, stopwords: set[str] = frozenset
         return False
     if _is_accessory_mismatch(title, hint):
         return False
-    title_tokens = set(_tokenize(title))
+    title_token_list = [w for w in _tokenize(title) if len(w) > 2 or w.isdigit()]
+    title_tokens = set(title_token_list)
     hint_words = [w for w in _tokenize(hint) if w not in stopwords and (len(w) > 2 or w.isdigit())]
     if not hint_words:
         return True  # nothing distinctive to check against (e.g. a bare city name)
+
+    if require_dominant:
+        # For hotels: a DIFFERENT property can legitimately reference the
+        # target by name as a landmark ("Carlton Hotel - Behind Taj Mahal
+        # Palace" for a "Taj Mahal Palace Mumbai" search — confirmed live,
+        # word-overlap alone doesn't catch this). Require the candidate
+        # text to be MOSTLY the hint, not just mention most of it within
+        # a longer, differently-named title. Not used for products: a
+        # terser competitor listing legitimately covers less of a long,
+        # SEO-stuffed hint — this ratio would wrongly reject real matches
+        # there.
+        hint_set = set(hint_words)
+        overlap = sum(1 for w in title_token_list if w in hint_set)
+        if not title_token_list or overlap < len(hint_words) * 0.6 or overlap / len(title_token_list) < 0.5:
+            return False
 
     if len(hint_words) <= 3:
         return all(w in title_tokens for w in hint_words)
@@ -210,6 +227,7 @@ def _title_matches(title: str | None, hint: str, stopwords: set[str] = frozenset
 
 def _pick_best_match(candidates: list[tuple[float, str | None, str | None]],
                       hint: str, stopwords: set[str] = frozenset(),
+                      require_dominant: bool = False,
                       ) -> tuple[float, str | None, str | None] | None:
     """Among candidates that pass _title_matches (the "close enough"
     bar), prefer one that's an EXACT match — the brand plus every specific
@@ -234,10 +252,11 @@ def _pick_best_match(candidates: list[tuple[float, str | None, str | None]],
         must_have = [hint_words[0]] + [w for w in hint_words if w.isdigit()]
         exact = [c for c in candidates
                  if c[2] and not _is_accessory_mismatch(c[2], hint)
-                 and all(w in set(_tokenize(c[2])) for w in must_have)]
+                 and all(w in set(_tokenize(c[2])) for w in must_have)
+                 and (not require_dominant or _title_matches(c[2], hint, stopwords, require_dominant=True))]
         if exact:
             return min(exact, key=lambda c: c[0])
-    loose = [c for c in candidates if _title_matches(c[2], hint, stopwords)]
+    loose = [c for c in candidates if _title_matches(c[2], hint, stopwords, require_dominant=require_dominant)]
     if loose:
         return min(loose, key=lambda c: c[0])
     return None
@@ -329,6 +348,7 @@ def _extract_top_price_and_link(html: str, base_url: str, domain: str | None = N
                                   hint_stopwords: set[str] = frozenset(),
                                   require_hint_match: bool = False,
                                   page_title: str | None = None,
+                                  require_dominant: bool = False,
                                   ) -> tuple[float | None, str | None, str | None]:
     """Generic heuristic: scan the DOM for every plausible ₹ price
     (skipping filter/sort/range chrome), then pick a candidate — good
@@ -447,10 +467,73 @@ def _extract_top_price_and_link(html: str, base_url: str, domain: str | None = N
         return None, None, None
 
     if require_hint_match and title_hint:
-        best = _pick_best_match(candidates, title_hint, hint_stopwords)
-        return best if best else (None, None, None)  # nothing on the page actually names it — don't guess
+        best = _pick_best_match(candidates, title_hint, hint_stopwords, require_dominant=require_dominant)
+        if best:
+            return best
+        # Per-price-node matching found nothing — try one more thing
+        # before giving up. Confirmed live on Google Hotels: when a search
+        # resolves to a page specifically ABOUT one property, that page
+        # states the property's name ONCE (its own heading) and shows its
+        # price nearby but further away in the DOM than the 6-level
+        # per-price walk above can reach — so a genuine match was being
+        # missed, not just an absent one.
+        heading_result = _price_near_heading(soup, title_hint, hint_stopwords, require_dominant=require_dominant)
+        if heading_result:
+            return heading_result
+        return None, None, None  # nothing on the page actually names it — don't guess
 
     return candidates[0]
+
+
+def _price_near_heading(soup: BeautifulSoup, hint: str,
+                          stopwords: set[str] = frozenset(),
+                          require_dominant: bool = True,
+                          ) -> tuple[float, str | None, str | None] | None:
+    """Find a heading (h1/h2/h3) whose text matches `hint` tightly, then
+    expand OUTWARD from it (not from a price, the other direction from
+    the per-candidate walk above) looking for a nearby price. Caps how far
+    it's willing to expand by requiring the found container to have only
+    a FEW price mentions (<=5) — if expanding hits a container with many
+    (the whole page, a sidebar of other properties), that's over-expanded
+    and this bails rather than risk grabbing an unrelated listing's price.
+
+    The heading match itself needs to be much stricter than the per-price
+    snippet check: a DIFFERENT property can legitimately reference the
+    target by name as a landmark (confirmed live: "Carlton Hotel - Behind
+    Taj Mahal Palace" wrongly matched a "Taj Mahal Palace Mumbai" search
+    on word-overlap alone). Requiring the heading to be MOSTLY the hint —
+    not just contain most of the hint's words somewhere within a longer,
+    differently-named heading — rules that out."""
+    hint_words = [w for w in _tokenize(hint) if w not in stopwords and (len(w) > 2 or w.isdigit())]
+    if not hint_words:
+        return None
+    hint_set = set(hint_words)
+    for heading in soup.find_all(["h1", "h2", "h3"]):
+        text = heading.get_text(" ", strip=True)
+        if not text or _is_accessory_mismatch(text, hint):
+            continue
+        heading_tokens = [w for w in _tokenize(text) if len(w) > 2 or w.isdigit()]
+        if not heading_tokens:
+            continue
+        overlap = sum(1 for w in heading_tokens if w in hint_set)
+        if overlap < len(hint_words) * 0.6 or overlap / len(heading_tokens) < 0.5:
+            continue  # mentions the target, but isn't mostly it — a different property
+        node = heading.parent
+        for _ in range(15):
+            if node is None:
+                break
+            node_text = node.get_text(" ", strip=True)
+            prices_here = PRICE_RE.findall(node_text)
+            if prices_here:
+                if len(prices_here) > 5:
+                    break  # over-expanded into a list of many properties — bail
+                price = _clean_price(prices_here[0])
+                if price is not None and price >= 50:
+                    link_el = node.find("a", href=True)
+                    return price, (link_el.get("href") if link_el else None), text
+                break
+            node = node.parent
+    return None
 
 
 _BLOCK_PHRASES = (
@@ -558,7 +641,20 @@ async def _check_one_hotel_site(context, domain: str, place: str, checkin: str,
               "title": None, "booking_url": None, "screenshot": None, "note": ""}
     try:
         await page.goto(url, timeout=NAV_TIMEOUT_MS, wait_until="domcontentloaded")
-        await page.wait_for_timeout(2000)
+        # A blind fixed wait was the wrong tool here: confirmed live,
+        # Booking.com's screenshot came back showing only its blue header
+        # bar — the page's actual results hadn't rendered yet by 2000ms,
+        # so extraction ran against an empty page and (correctly, given
+        # nothing was there) found no price. Wait for actual ₹ content to
+        # appear instead, up to a real budget; if it never shows up within
+        # that budget (a genuinely slow or price-less page), proceed
+        # anyway rather than hang — extraction will honestly report
+        # no_match rather than pretend this fixed everything.
+        try:
+            await page.wait_for_selector("text=/₹/", timeout=8000)
+        except Exception:  # noqa: BLE001
+            pass
+        await page.wait_for_timeout(800)
         # The tab's own <title> is a second, independent confirmation
         # signal — when a site resolves a named-hotel search to a page
         # specifically about that property (e.g. Google's own "Hotel
@@ -576,7 +672,7 @@ async def _check_one_hotel_site(context, domain: str, place: str, checkin: str,
         price, link, title = _extract_top_price_and_link(
             html, url, title_hint=place, hint_stopwords=_HOTEL_STOPWORDS,
             require_hint_match=_looks_like_specific_hotel(place),
-            page_title=page_title,
+            page_title=page_title, require_dominant=True,
         )
         if price is None:
             if _looks_blocked(html):
@@ -623,6 +719,73 @@ def _log_price_history(rows: list[dict]):
                               "price_inr", "currency_native", "price_native", "notes"])
         for r in rows:
             writer.writerow(r)
+
+
+def _guess_place_from_url(url: str) -> str | None:
+    """A hotel search-results page's own <title> tends to be marketing
+    copy wrapped around the actual query ("Booking.com: खोज नतीजे: Hotel
+    Sepoy Grande. Book your hotel now!" — confirmed live), which pollutes
+    the hint used to search other sites far more than a product PDP's
+    title does. The URL's own query params are cleaner and cover the
+    common OTA conventions (including this tool's own generated URLs, so
+    a user pasting one of our own site's links round-trips correctly)."""
+    qs = parse_qs(urlparse(url).query)
+    for key in ("ss", "city", "city.name", "Hotel", "q", "keyword", "destination"):
+        vals = qs.get(key)
+        if vals and vals[0] and vals[0].strip().upper() != "NA":
+            return unquote_plus(vals[0])
+    return None
+
+
+async def resolve_hotel_origin(browser, url: str) -> tuple[dict, str | None]:
+    """Open a user-supplied hotel/booking-page URL directly — the hotel
+    equivalent of resolve_origin() for products. Reads the page's own
+    title (so other sites get searched by the real property name, not the
+    raw URL) and grabs its own price/screenshot as a confirmed data point,
+    exactly as booked/priced on the page the user actually gave us."""
+    context = await browser.new_context(user_agent=UA, viewport={"width": 1280, "height": 900})
+    run_dir = _new_run_dir("hotel-origin")
+    page = await context.new_page()
+    domain = urlparse(url).netloc.replace("www.", "")
+    result = {"site": domain, "url": url, "status": "error", "price_inr": None,
+              "title": None, "booking_url": url, "screenshot": None,
+              "note": "The link you provided."}
+    title_text = None
+    try:
+        await page.goto(url, timeout=NAV_TIMEOUT_MS, wait_until="domcontentloaded")
+        try:
+            await page.wait_for_selector("text=/₹/", timeout=8000)
+        except Exception:  # noqa: BLE001
+            pass
+        await page.wait_for_timeout(800)
+        title_text = (await page.title() or "").strip() or None
+        html = await page.content()
+        shot_path = run_dir / "origin.png"
+        await page.screenshot(path=str(shot_path), full_page=False)
+        result["screenshot"] = f"/screenshots/{run_dir.name}/{shot_path.name}"
+        result["title"] = title_text[:150] if title_text else None
+
+        price, _, _ = _extract_top_price_and_link(html, url, domain=domain)
+        if price is not None:
+            result["status"] = "ok"
+            result["price_inr"] = price
+        else:
+            result["status"] = "no_match"
+            result["note"] = "The link you provided — no price detected automatically, open it to check."
+    except Exception as exc:  # noqa: BLE001
+        if domain in _KNOWN_BLOCKED_DOMAINS:
+            result["status"] = "blocked"
+            result["note"] = _KNOWN_BLOCKED_NOTE
+        else:
+            result["status"] = "error"
+            result["note"] = f"Could not load the link you provided ({type(exc).__name__})."
+    finally:
+        await page.close()
+        await context.close()
+    # Prefer the URL's own query param over the page <title> for the name
+    # used to search OTHER sites — see _guess_place_from_url's docstring.
+    resolved_place = _guess_place_from_url(url) or title_text
+    return result, resolved_place
 
 
 async def resolve_origin(browser, url: str) -> tuple[dict, str | None]:
@@ -705,17 +868,20 @@ async def run_product_search(browser, query: str, sites: list[str],
 
 
 async def run_hotel_search(browser, place: str, checkin: str, checkout: str,
-                            guests: int, sites: list[str]) -> dict:
+                            guests: int, sites: list[str],
+                            origin_result: dict | None = None) -> dict:
     context = await browser.new_context(user_agent=UA, viewport={"width": 1280, "height": 900})
     run_dir = _new_run_dir("hotel")
     tasks = [_check_one_hotel_site(context, d, place, checkin, checkout, guests, run_dir) for d in sites]
     results = await asyncio.gather(*tasks)
     await context.close()
 
-    ok = [r for r in results if r["status"] == "ok"]
+    all_results = list(results) + ([origin_result] if origin_result else [])
+
+    ok = [r for r in all_results if r["status"] == "ok"]
     ok.sort(key=lambda r: r["price_inr"])
     cheapest = ok[:5]
-    others = [r for r in results if r["status"] != "ok"]
+    others = [r for r in all_results if r["status"] != "ok"]
 
     now = datetime.now(timezone.utc).isoformat()
     label = f"{place} {checkin}->{checkout} x{guests}"

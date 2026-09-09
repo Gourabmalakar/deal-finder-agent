@@ -1,5 +1,76 @@
 # Testing report — webapp scraper
 
+## Round 6 — hotel search root-caused properly, tested domestic + international (2026-09-09)
+
+Gourab reported the hotel search still often only showed a single Google
+Hotels result and rejected "just Google" as an acceptable outcome, with an
+explicit bar: at least 2 verified options with prices and links, tested
+across multiple hotels both in and outside India. Investigated three
+separate root causes (not one) rather than re-guessing:
+
+1. **Booking.com's page hadn't finished rendering when screenshotted** —
+   a real screenshot showed only its blank blue header bar. The fixed
+   2000ms wait was too short for this specific page. **Fix**: wait for
+   actual ₹ content to appear (up to 8s), falling back to proceeding
+   after the budget rather than hanging, instead of a blind fixed delay.
+
+2. **Google Hotels' resolved single-property page states the hotel name
+   ONCE, structurally far from its own price badge** — confirmed by
+   inspecting the actual page: "The Taj Mahal Palace, Mumbai" appeared as
+   a heading, with its "₹18,877 GREAT DEAL" price many DOM levels away
+   (further than the existing 6-level per-price walk can reach), so a
+   genuine match was being missed, not just an absent one. **Fix**:
+   `_price_near_heading()` — find a heading whose text is (see #3) the
+   target, then expand OUTWARD from the heading (the opposite direction
+   from the existing per-price walk) looking for a nearby price, capped
+   by bailing if the expansion hits a container with many price
+   mentions (over-expanded into a sidebar/list of other properties).
+
+3. **The heading match itself was briefly too loose and reintroduced a
+   wrong-property bug**: "Carlton Hotel - Behind Taj Mahal Palace"
+   matched a "Taj Mahal Palace Mumbai" search on word-overlap alone — a
+   different property legitimately referencing the target by name as a
+   landmark. This wasn't limited to the new heading fallback; the
+   original per-candidate matcher (`_pick_best_match`) had the same
+   weakness. **Fix**: added `require_dominant` — for hotels only (not
+   products, where a terser competitor listing legitimately covers less
+   of a long SEO-stuffed hint), the matching candidate/heading text must
+   be MOSTLY the hint (≥60% of the hint's words present, and those words
+   making up ≥50% of the candidate's own words), not just contain most of
+   it within a longer, differently-named text.
+
+**Also added, per request**: hotel URL support in the "Place or hotel"
+field, mirroring the product side — pasting a Booking.com/MakeMyTrip/etc.
+link now opens it directly (`resolve_hotel_origin()`) and reads the real
+property name to search other sites with, rather than searching other
+sites for the raw URL text. One nuance found and fixed along the way: a
+search-results page's own `<title>` is marketing copy wrapped around the
+query ("Booking.com: खोज नतीजे: Hotel Sepoy Grande. Book your hotel
+now!", confirmed live) — using it as the hint directly pollutes matching.
+`_guess_place_from_url()` extracts the actual place from the URL's own
+query parameters first (covers common OTA conventions, including this
+tool's own generated URLs), falling back to the page title only when no
+such parameter exists.
+
+**Tested across 5 scenarios, domestic and international, before and after
+each fix** — full before/after counts:
+
+| Search | Before this round | After |
+|---|---|---|
+| Taj Mahal Palace Mumbai (domestic, named) | 0 results | 2 (Google Hotels + Booking.com, both correctly "Taj Mahal Tower, Mumbai") |
+| Marina Bay Sands Singapore (international, named) | 0 results | 2 (Google Hotels + Booking.com, both correctly "Marina Bay Sands") |
+| Hotel Sepoy Grande (domestic, named) | 1-2 (inconsistent) | 1-2 (Google Hotels reliable; Booking.com varies with actual site availability) |
+| Hotel Delhi 37 (adversarial control — a name whose distinguishing part is just a number) | 0 (correctly safe) | 0 (still correctly safe — no fix here reintroduced a wrong match) |
+| Goa (generic city) | 2-3 | 2-3, unchanged |
+
+**Honest limitation, not papered over**: "at least 2" is not universally
+guaranteed for every conceivable hotel name — a genuinely obscure
+property, or a name whose only distinguishing part doesn't show up
+clearly on any checked site (Hotel Delhi 37's case), can still legitimately
+return fewer. What changed is that well-known/major properties — the
+realistic common case — now reliably clear that bar, and a property this
+tool can't confirm stays honestly empty rather than wrong.
+
 ## Round 5 — three more real bugs from actual use, plus site expansion (2026-09-08)
 
 Gourab reported: "iphone 17" matched a phone *case* on TataCliq and came

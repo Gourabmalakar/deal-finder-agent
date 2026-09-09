@@ -35,7 +35,11 @@ Then open **http://127.0.0.1:8000**.
 
 - `backend/main.py` — FastAPI app. `POST /api/product-search` and
   `POST /api/hotel-search` do the real work; `/screenshots/...` serves the
-  proof screenshots captured for each site checked.
+  proof screenshots captured for each site checked. Both accept either a
+  plain search (a product description, or a place/hotel name) or a URL —
+  paste a product link or a hotel booking-page link directly into the
+  same field and it opens that page first, reads the real name, and
+  searches other sites for that rather than the raw URL text.
 - `backend/scraper.py` — opens each site's search URL in a real headless
   browser tab (in parallel), screenshots it, and extracts a price with a
   generic heuristic. Every verified result is appended to

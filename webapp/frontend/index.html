@@ -256,7 +256,7 @@
     <div class="card">
       <div class="field">
         <label for="hotel-place">Place or hotel</label>
-        <input id="hotel-place" type="text" placeholder="Mysuru, or a specific hotel name" autocomplete="off" />
+        <input id="hotel-place" type="text" placeholder="Mysuru, a specific hotel name, or a booking page link" autocomplete="off" />
       </div>
       <div class="row2 field">
         <div>
@@ -343,6 +343,9 @@ function renderResults(container, data, kind){
   let html = '';
   if (kind === 'product' && data.resolved_query && data.origin_query && data.resolved_query !== data.origin_query){
     html += `<p class="empty-hint" style="margin-bottom:14px">Opened your link and matched it as <strong style="color:var(--text)">${escapeHtml(data.resolved_query)}</strong> — searching other sites for that.</p>`;
+  }
+  if (kind === 'hotel' && data.resolved_place && data.origin_place && data.resolved_place !== data.origin_place){
+    html += `<p class="empty-hint" style="margin-bottom:14px">Opened your link and matched it as <strong style="color:var(--text)">${escapeHtml(data.resolved_place)}</strong> — searching other sites for that.</p>`;
   }
   if (cheapest.length){
     html += `<div class="results-head"><h2>${cheapest.length} verified price${cheapest.length>1?'s':''} found</h2>

@@ -69,7 +69,9 @@ class ProductQuery(BaseModel):
 
 
 class HotelQuery(BaseModel):
-    place: str = Field(..., min_length=2, max_length=200)
+    # Long enough for a pasted booking-page URL (tracking params included),
+    # same reasoning as ProductQuery's cap.
+    place: str = Field(..., min_length=2, max_length=2000)
     checkin: str
     checkout: str
     guests: int = Field(..., ge=1, le=20)
@@ -128,17 +130,33 @@ async def hotel_search(body: HotelQuery):
     if body.checkout <= body.checkin:
         raise HTTPException(400, "Check-out must be after check-in.")
 
+    raw_place = body.place.strip()
+    browser = _state["browser"]
+
+    origin_result = None
+    place = raw_place
+    if raw_place.lower().startswith(("http://", "https://")):
+        origin_result, resolved_title = await scraper.resolve_hotel_origin(browser, raw_place)
+        if resolved_title:
+            place = resolved_title
+
     hotel_catalog = load_hotel_sites()
     sites = [s["domain"] for s in hotel_catalog["sites"]]
-    browser = _state["browser"]
+    if origin_result:
+        # don't re-search the site the user's own link already came from
+        sites = [s for s in sites if s != origin_result["site"]]
+
     result = await scraper.run_hotel_search(
-        browser, body.place.strip(), body.checkin, body.checkout, body.guests, sites
+        browser, place, body.checkin, body.checkout, body.guests, sites,
+        origin_result=origin_result,
     )
     result["sites_checked"] = sites
+    result["origin_place"] = raw_place
+    result["resolved_place"] = place
 
     eval_verdict = evaluator.evaluate_and_log(
         "hotel",
-        {"place": body.place, "checkin": body.checkin, "checkout": body.checkout, "guests": body.guests},
+        {"place": raw_place, "checkin": body.checkin, "checkout": body.checkout, "guests": body.guests},
         result, time.monotonic() - t0,
     )
     result["_eval"] = eval_verdict
