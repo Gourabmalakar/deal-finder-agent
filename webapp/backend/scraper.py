@@ -745,6 +745,7 @@ async def _check_one_hotel_site(context, domain: str, place: str, checkin: str,
                     "title": page_title.replace(" - Google hotels", "").strip() or place,
                     "booking_url": _absolutize(o["link"], "https://www.google.com/") or url,
                     "screenshot": result["screenshot"],
+                    "dates_accurate": False,
                     "note": ("Google's own listed price for this property, for its default "
                              "1-night stay — verified live that Google ignores requested "
                              "check-in/check-out params, so this is NOT priced for your "
@@ -771,7 +772,14 @@ async def _check_one_hotel_site(context, domain: str, place: str, checkin: str,
             result["price_inr"] = price
             result["title"] = title or place
             result["booking_url"] = _absolutize(link, url) or url
-            result["note"] = "Best-effort match — confirm dates, taxes and cancellation on the site."
+            google_ignores_dates = "google." in domain
+            result["dates_accurate"] = not google_ignores_dates
+            result["note"] = (
+                "Google ignores requested check-in/check-out (verified live), so this is "
+                "its default-date price, not yours — open the link to price your dates."
+                if google_ignores_dates else
+                "Priced for your dates — confirm taxes and cancellation on the site."
+            )
     except Exception as exc:  # noqa: BLE001
         if domain in _KNOWN_BLOCKED_DOMAINS:
             result["status"] = "blocked"
@@ -821,6 +829,45 @@ def _clean_place_title(title: str) -> str:
         prev = out
         out = _TITLE_BRANDING_RE.sub("", out).strip()
     return out or title.strip()
+
+
+_BAD_TITLE_RE = re.compile(
+    r"access denied|just a moment|attention required|are you a human|robot check|"
+    r"security check|forbidden|not found|^error|blocked|captcha|unavailable|"
+    r"page not found", re.I)
+
+_GENERIC_SLUG_WORDS = {
+    "search", "searchresults", "results", "hotels", "hotel", "index", "home",
+    "booking", "travel", "lodging", "property", "properties", "detail", "details",
+    "en", "in", "us", "gb", "enin", "engb", "www", "html", "php", "rooms", "stay",
+}
+
+
+def _name_from_url_slug(url: str) -> str | None:
+    """Pull a property name out of a URL path — for a hotel's OWN website
+    ("/en-in/hotels/taj-mahal-palace-mumbai") this is far more reliable
+    than the page <title>.
+
+    Confirmed live and the reason this exists: tajhotels.com bot-blocked
+    our request, and its error page's title — the literal words "Access
+    Denied" — was then used as the hotel name to search every other site
+    with, producing three confidently-wrong results. A slug can't fail
+    that way."""
+    path = urlparse(url).path
+    for seg in reversed([s for s in path.split("/") if s]):
+        seg = re.sub(r"\.(html?|php|aspx?)$", "", seg, flags=re.I)
+        words = [w for w in re.split(r"[-_+]+", seg) if w and not w.isdigit() and len(w) > 1]
+        meaningful = [w for w in words if w.lower() not in _GENERIC_SLUG_WORDS]
+        if len(meaningful) >= 2:
+            return " ".join(meaningful)
+    return None
+
+
+def _usable_title(title: str | None) -> bool:
+    """A blocked/error page's title must never become the search term."""
+    if not title or len(title.strip()) < 4:
+        return False
+    return not _BAD_TITLE_RE.search(title)
 
 
 def _guess_place_from_url(url: str) -> str | None:
@@ -883,6 +930,7 @@ async def resolve_hotel_origin(browser, url: str) -> tuple[list[dict], str | Non
                     "title": clean_title or url,
                     "booking_url": _absolutize(o["link"], "https://www.google.com/") or url,
                     "screenshot": result["screenshot"],
+                    "dates_accurate": False,
                     "note": ("Google's own listed price for the link you gave, for its default "
                              "1-night stay — verified live that Google ignores requested "
                              "check-in/check-out params, so this is NOT priced for your "
@@ -890,7 +938,10 @@ async def resolve_hotel_origin(browser, url: str) -> tuple[list[dict], str | Non
                 } for o in offers[:5]]
                 await page.close()
                 await context.close()
-                return origin_rows, clean_title
+                resolved = (_guess_place_from_url(url)
+                            or (clean_title if _usable_title(clean_title) else None)
+                            or _name_from_url_slug(url))
+                return origin_rows, resolved
 
         price, _, _ = _extract_top_price_and_link(html, url, domain=domain)
         if price is not None:
@@ -913,7 +964,14 @@ async def resolve_hotel_origin(browser, url: str) -> tuple[list[dict], str | Non
     # Prefer the URL's own query param over the page <title> for the name
     # used to search OTHER sites — see _guess_place_from_url's docstring,
     # and strip the site's own branding off the title (_clean_place_title).
-    resolved_place = _guess_place_from_url(url) or (_clean_place_title(title_text) if title_text else None)
+    # Order matters: an OTA search URL's query param is cleanest; a real
+    # property page's title is next best; the URL slug is the fallback for
+    # when the page is blocked and its title is an error message.
+    resolved_place = (
+        _guess_place_from_url(url)
+        or (_clean_place_title(title_text) if _usable_title(title_text) else None)
+        or _name_from_url_slug(url)
+    )
     return [result], resolved_place
 
 

@@ -139,8 +139,18 @@ async def hotel_search(body: HotelQuery):
     place = raw_place
     if raw_place.lower().startswith(("http://", "https://")):
         origin_results, resolved_title = await scraper.resolve_hotel_origin(browser, raw_place)
-        if resolved_title:
-            place = resolved_title
+        if not resolved_title:
+            # Never search other sites for an unidentified link. Confirmed
+            # live: a bot-blocked hotel website returned an "Access Denied"
+            # error page, whose title was then used as the hotel name —
+            # every other site got searched for "Access Denied" and
+            # returned confidently wrong results.
+            raise HTTPException(
+                422,
+                "Couldn't identify a hotel from that link — the site may have blocked "
+                "us, or the page doesn't name the property. Type the hotel name instead.",
+            )
+        place = resolved_title
         origin_domain = urlparse(raw_place).netloc.replace("www.", "")
 
     hotel_catalog = load_hotel_sites()

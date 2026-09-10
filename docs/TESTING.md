@@ -1,5 +1,77 @@
 # Testing report — webapp scraper
 
+## Round 8 — URL inconsistency root-caused; dates settled honestly (2026-09-10)
+
+Gourab: results are inconsistent when searching with URLs "including the
+hotel's own website", and the dates still aren't passed on.
+
+### 1. The URL inconsistency — a genuine, ugly bug
+
+Pasting `tajhotels.com/en-in/hotels/taj-mahal-palace-mumbai` returned
+three confidently-wrong hotels. Root cause, found by reproducing it:
+tajhotels.com **bot-blocked us and served an error page**, and the tool
+took that page's `<title>` — the literal words **"Access Denied"** — as
+the hotel name, then searched every other site for "Access Denied".
+Worse, "Access Denied" is two words with no hotel keyword, so
+`_looks_like_specific_hotel()` returned False, which switched OFF the
+match-verification entirely and let any first-price-on-page through.
+
+Fixes:
+- `_usable_title()` rejects blocked/error page titles (access denied,
+  just a moment, attention required, forbidden, captcha, …) so they can
+  never become the search term.
+- `_name_from_url_slug()` derives the name from the URL path instead —
+  a hotel's own website almost always carries it there
+  (`/hotels/taj-mahal-palace-mumbai` → "taj mahal palace mumbai").
+- Resolution order is now: URL query param (best for OTA search links) →
+  usable page title (best for real property pages) → URL slug (the
+  fallback for exactly the blocked case above).
+- If none of the three yields a name, the request now returns a clear
+  **422 with guidance** instead of searching for garbage.
+
+Verified: that same tajhotels.com URL now resolves to "taj mahal palace
+mumbai" and returns 5 real prices for *The Taj Mahal Palace, Mumbai*.
+
+### 2. Dates — what's actually true, and what each row now says
+
+Established by direct testing, not assumption:
+- **Google ignores date parameters entirely.** Passing
+  `?checkin=&checkout=` changes nothing: the widget stays on
+  today→tomorrow and every offer price is byte-identical across three
+  wildly different date ranges (including peak-season 25–27 Dec).
+- **Driving Google's date picker doesn't work headless** — the picker
+  never opens (no date controls appear among the page's visible
+  buttons), so clicking day cells has no effect.
+- **Rewriting dates on Google's outbound provider links doesn't recover
+  a price either**: the Official-site link redirects to a host with no
+  date params at all, MakeMyTrip's link fails with the same
+  `ERR_HTTP2_PROTOCOL_ERROR` block documented elsewhere, and Agoda's
+  loads blank.
+- Google encodes dates in a protobuf `ts=` param. Its structure decodes
+  cleanly (nested year/month/day pairs) but the captured sample didn't
+  verify (year came out 2025 for a 2026 date), so it was **deliberately
+  not hand-rolled** — a silently-wrong date encoding produces
+  confidently wrong prices, the exact failure this project's rules exist
+  to prevent.
+
+So rather than pretend, **every row now carries `dates_accurate`** and the
+UI shows it as a chip:
+- ✓ *priced for your dates* — Booking.com, EaseMyTrip and other direct
+  searches, whose date parameters genuinely work (verified).
+- ⚠ *Google's default dates — not yours* — every Google-sourced row,
+  including Google city searches (which were briefly mislabelled as
+  accurate before this round, since Google ignores dates on that path too).
+
+### Verified across the matrix
+
+| Search | Result |
+|---|---|
+| `tajhotels.com/...` (own website, bot-blocked) | was 3 wrong hotels → **5 correct**, name recovered from URL slug |
+| Pasted Google Hotels URL | **5** providers, resolves to "Hotel Rio Meridian" (title now preferred over slug) |
+| Hotel Rio Meridian | **5** providers, all correctly flagged ⚠ default-dates |
+| Marina Bay Sands (international) | **3**, incl. Booking.com ✓ *priced for your dates* |
+| Goa (city) | **3** — EaseMyTrip ✓, Booking ✓, Google ⚠ (now correctly flagged) |
+
 ## Round 7 — the actual fix: use Google's own provider list (2026-09-09)
 
 Gourab: pasting a hotel URL returned that same page back and no prices

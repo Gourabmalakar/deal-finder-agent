@@ -179,6 +179,9 @@
   .rcard .title{font-size:13.5px;color:var(--text-muted);line-height:1.4;min-height:2.5em;
     display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
   .rcard .price{font-size:24px;font-weight:800;letter-spacing:-.01em;margin-top:2px}
+  .datechip{display:inline-block;font-size:11.5px;font-weight:600;padding:3px 8px;border-radius:999px;width:fit-content;margin-top:2px}
+  .datechip.ok{background:var(--success-bg);color:var(--success)}
+  .datechip.warn{background:var(--warn-bg);color:var(--warn)}
   .rcard .note{font-size:12px;color:var(--text-faint);line-height:1.4}
   .rcard .go{
     margin-top:8px;text-decoration:none;text-align:center;padding:10px;border-radius:var(--radius-sm);
@@ -363,6 +366,11 @@ function renderResults(container, data, kind){
             <span class="site">${escapeHtml(siteName(r.site))}</span>
             <span class="title">${escapeHtml(r.title || '')}</span>
             <span class="price">${money(r.price_inr)}</span>
+            ${r.dates_accurate === true
+              ? '<span class="datechip ok">✓ priced for your dates</span>'
+              : r.dates_accurate === false
+                ? '<span class="datechip warn">⚠ Google\'s default dates — not yours</span>'
+                : ''}
             <span class="note">${escapeHtml(r.note || '')}</span>
             <a class="go" href="${link}" target="_blank" rel="noopener noreferrer">View listing →</a>
           </div>
