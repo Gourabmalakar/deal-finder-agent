@@ -1,5 +1,118 @@
 # Testing report — webapp scraper
 
+## Round 9 — dates actually solved; hotel URLs removed (2026-09-10)
+
+Gourab: "you are not able to effectively solve the date issue, it shows
+google default dates, which basically defeats the purpose. URL don't work,
+let's remove that as a feature. I just need you to show the prices on days
+I selected."
+
+Round 8 had concluded Google's dates were unfixable and settled for
+labelling rows honestly. That conclusion was wrong, and the label was the
+wrong answer to the right complaint. This round fixes it properly.
+
+### 1. Google's dates: read off Google, not guessed
+
+The earlier attempt failed because the `ts` protobuf was hand-rolled from
+memory and the sample didn't verify. This time it was **harvested**:
+Google's own results page contains `ts=` links for its "popular dates"
+suggestions. Seven of them were pulled out of the HTML and decoded field
+by field, every one the same shape:
+
+```
+1: 0
+3 { 2 { 2 { 1 {year, month, day}    <- check-in
+            2 {year, month, day}    <- check-out
+            3: nights }
+         6 { 2: 0 }
+         7: 1 } }
+5 { 1 {} }
+```
+
+Encoding that (`sites.google_travel_ts()`) and loading the page gives
+Google's own check-in/check-out inputs filled with **"Thu, Dec 24" /
+"Sat, Dec 26"** — the requested dates, verified for two different ranges.
+Before: identical prices and an unchanged "Sep 30 - Oct 1" across three
+date ranges including Christmas.
+
+### 2. Every price now has to prove its dates
+
+`_page_confirms_dates()` asks each page, after loading, which dates it is
+pricing: its own check-in/check-out form fields first (authored by the
+site, not inferred by us), its visible text second. A row that can't be
+confirmed comes back as `wrong_dates` and is listed under skipped rather
+than ranked. The evaluator enforces this as `priced_for_requested_dates`,
+so a regression fails a run instead of quietly shipping.
+
+Two bugs this immediately exposed, both of which had been producing
+"correct-looking" wrong output:
+
+- **Booking.com was serving the whole page in Hindi** ("गुरु. 24 दिसं."),
+  so its dates couldn't be read and a correctly-priced site was being
+  dropped. Fixed with `locale="en-IN"` on hotel contexts only — an
+  explicit locale of *any* value (en-IN, en-GB, en-US alike) makes
+  amazon.in answer with a file download instead of a page
+  ("Page.goto: Download is starting"), so product contexts must not have
+  one. The asymmetry in `_new_context()` is load-bearing in both
+  directions.
+- **Only the short month name was being checked.** Booking renders
+  "24 December 2026", which does not contain "24 Dec".
+
+### 3. Google's panel: 5 real providers, not 4 room types
+
+The offer extractor keyed on rows ending "Visit site", which matches both
+Google's organic provider rows (`/travel/lodging/clk`) and its ads
+(`/aclk`). The ads are per *room type*, so a live run returned "Superior
+Room / Deluxe Room Double / Suite" as if they were competing booking
+sites — four of five rows were the same provider. Now only organic rows
+are read, and each carries a nightly rate **and** the stay total.
+
+### 4. Two price misreads found while testing
+
+- **EaseMyTrip's price filter** ("₹ 1 - ₹ 2,000", "Above ₹ 30,000") was
+  being reported as a Goa rate of ₹2,000. Every ancestor of a filter
+  bucket starts with a ₹, so the title-based guards never engaged —
+  `title` stayed None and `full_text` stayed empty. Now the price node's
+  own text is checked for range/bound patterns first.
+- **Booking.com quoted the struck-through price**: it writes "Original
+  price ₹ 17,998. Current price ₹ 17,458." into one string, and the first
+  ₹ in it is the higher one.
+
+### 5. Hotel URLs removed; product URLs guarded
+
+Hotel URL input is gone (HTTP 422 with guidance). Testing the product
+side turned up the identical failure there: `amazon.in/dp/<asin>` served a
+page titled just **"Amazon.in"**, which got searched for everywhere else
+and returned a shampoo called "Amazon Series". `is_usable_product_title()`
+now rejects a title that is only the site's own name, or a block/error
+page, and the request is refused instead of guessed at.
+
+### Results — every case re-run end to end
+
+| Search | Dates | Result |
+|---|---|---|
+| Hotel Rio Meridian | 24-26 Dec | 5 providers, all date-confirmed, ₹5,697-₹12,390/nt + stay totals |
+| Hotel Rio Meridian | 5-6 Oct | 5 providers, different set and prices — dates genuinely change the answer |
+| The Taj Mahal Palace Mumbai | 10-12 Nov | 5 providers, ₹36,156-₹43,680/nt |
+| Marina Bay Sands Singapore | 10-12 Nov | 5 providers incl. MakeMyTrip/Goibibo/Expedia |
+| The Ritz London | 10-12 Nov | 5 providers incl. Hotels.com/Expedia/Qantas |
+| Goa (city) | 24-26 Dec | 2 rows, both confirmed (Booking ₹2,080 — the current price, not the struck-through one) |
+| Pasted hotel URL | — | HTTP 422, tells the user to type the name |
+| boAt Airdopes 141 | — | Amazon ₹1,099 (cheapest), Flipkart ₹1,299 |
+| iPhone 17 | — | Flipkart ₹82,900 — matches Gourab's own screenshot |
+| Pasted amazon.in/dp link | — | HTTP 422 rather than a wrong product |
+
+### Sites tested and rejected for hotels
+
+Eight OTAs were checked headless for whether they honour dates in a URL.
+Expedia and Hotels.com bot-block ("Bot or Not?"). Agoda drops the query
+and bounces to its homepage. Cleartrip was added and then removed: it
+serves a generic marketing page that shows prices but never states which
+dates they are for, so nothing on it can be proved. MakeMyTrip, Goibibo
+and Yatra stay in the list only because Google surfaces their rates.
+
+---
+
 ## Round 8 — URL inconsistency root-caused; dates settled honestly (2026-09-10)
 
 Gourab: results are inconsistent when searching with URLs "including the

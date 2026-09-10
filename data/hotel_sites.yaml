@@ -29,9 +29,29 @@ sites:
     domain: yatra.com
     kind: ota
 
+not_usable: >
+  Eight OTAs were tested headless for whether they honour dates in a URL.
+  These are deliberately absent: Expedia and Hotels.com bot-block ("Bot or
+  Not?"); Agoda drops the query and bounces to its homepage; Cleartrip
+  serves a generic marketing page that shows prices but never states which
+  dates they are for, so nothing on it can be proved. MakeMyTrip, Goibibo
+  and Yatra remain in the list only because Google surfaces their rates —
+  their own sites block us.
+
 on_user_supplied_links: >
-  If the user gives direct links (e.g. a specific Booking.com or MakeMyTrip
-  hotel page), check those exact links first — they name the property the
-  user actually wants. Then fill remaining slots for the same hotel and
-  dates from the default site list above. Never substitute a different,
-  similarly-named property.
+  The webapp does not accept hotel URLs — it takes a hotel or city name.
+  Resolving a pasted booking link into a property name was built and then
+  withdrawn: it needed to read the name off a page that hotel sites
+  routinely refuse to serve an automated browser, and a name read off a
+  blocked page ("Access Denied") was then searched for everywhere else,
+  returning confidently wrong hotels. A skill session driving a real
+  browser can still open a link the user gives it; the automated path
+  cannot do so reliably, and does not pretend to.
+
+dates: >
+  Every price shown must be for the dates the user asked for. A site is
+  asked, after loading, which dates it is actually pricing (its own
+  check-in/check-out fields, else its visible text) and any price the page
+  won't confirm is dropped rather than displayed. Google in particular
+  ignores plain checkin/checkout params entirely and needs its `ts`
+  protobuf — see sites.google_travel_ts().

@@ -205,6 +205,7 @@
   .skip-tag.blocked{background:var(--danger-bg);color:var(--danger)}
   .skip-tag.no_match{background:var(--warn-bg);color:var(--warn)}
   .skip-tag.error{background:var(--warn-bg);color:var(--warn)}
+  .skip-tag.wrong_dates{background:var(--warn-bg);color:var(--warn)}
   .skip-row .note{color:var(--text-faint);flex:1}
 
   .empty-hint{font-size:13.5px;color:var(--text-faint);margin-top:6px;line-height:1.5}
@@ -259,7 +260,7 @@
     <div class="card">
       <div class="field">
         <label for="hotel-place">Place or hotel</label>
-        <input id="hotel-place" type="text" placeholder="Mysuru, a specific hotel name, or a booking page link" autocomplete="off" />
+        <input id="hotel-place" type="text" placeholder="Goa, or a hotel name like Taj Mahal Palace Mumbai" autocomplete="off" />
       </div>
       <div class="row2 field">
         <div>
@@ -347,8 +348,9 @@ function renderResults(container, data, kind){
   if (kind === 'product' && data.resolved_query && data.origin_query && data.resolved_query !== data.origin_query){
     html += `<p class="empty-hint" style="margin-bottom:14px">Opened your link and matched it as <strong style="color:var(--text)">${escapeHtml(data.resolved_query)}</strong> — searching other sites for that.</p>`;
   }
-  if (kind === 'hotel' && data.resolved_place && data.origin_place && data.resolved_place !== data.origin_place){
-    html += `<p class="empty-hint" style="margin-bottom:14px">Opened your link and matched it as <strong style="color:var(--text)">${escapeHtml(data.resolved_place)}</strong> — searching other sites for that.</p>`;
+  if (kind === 'hotel'){
+    html += `<p class="empty-hint" style="margin-bottom:14px">Every price below was confirmed against the dates the site itself was showing for
+      <strong style="color:var(--text)">${escapeHtml(data.checkin)} to ${escapeHtml(data.checkout)}</strong>. Anything a site wouldn't confirm was dropped, not shown.</p>`;
   }
   if (cheapest.length){
     html += `<div class="results-head"><h2>${cheapest.length} verified price${cheapest.length>1?'s':''} found</h2>
@@ -366,10 +368,11 @@ function renderResults(container, data, kind){
             <span class="site">${escapeHtml(siteName(r.site))}</span>
             <span class="title">${escapeHtml(r.title || '')}</span>
             <span class="price">${money(r.price_inr)}</span>
+            ${r.stay_total_inr ? `<span class="meta">${money(r.stay_total_inr)} total for the stay</span>` : ''}
             ${r.dates_accurate === true
-              ? '<span class="datechip ok">✓ priced for your dates</span>'
+              ? '<span class="datechip ok">✓ confirmed for your dates</span>'
               : r.dates_accurate === false
-                ? '<span class="datechip warn">⚠ Google\'s default dates — not yours</span>'
+                ? '<span class="datechip warn">⚠ site would not confirm your dates</span>'
                 : ''}
             <span class="note">${escapeHtml(r.note || '')}</span>
             <a class="go" href="${link}" target="_blank" rel="noopener noreferrer">View listing →</a>
@@ -387,7 +390,7 @@ function renderResults(container, data, kind){
     skipped.forEach(r => {
       html += `<div class="skip-row">
         <span class="site">${escapeHtml(siteName(r.site))}</span>
-        <span class="skip-tag ${r.status}">${r.status.replace('_',' ')}</span>
+        <span class="skip-tag ${r.status}">${r.status === 'wrong_dates' ? 'wrong dates' : r.status.replace('_',' ')}</span>
         <span class="note">${escapeHtml(r.note || '')}</span>
       </div>`;
     });

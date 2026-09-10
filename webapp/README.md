@@ -35,11 +35,12 @@ Then open **http://127.0.0.1:8000**.
 
 - `backend/main.py` — FastAPI app. `POST /api/product-search` and
   `POST /api/hotel-search` do the real work; `/screenshots/...` serves the
-  proof screenshots captured for each site checked. Both accept either a
-  plain search (a product description, or a place/hotel name) or a URL —
-  paste a product link or a hotel booking-page link directly into the
-  same field and it opens that page first, reads the real name, and
-  searches other sites for that rather than the raw URL text.
+  proof screenshots captured for each site checked. The product field
+  accepts a description or a product URL (a pasted link is opened first so
+  other sites get searched by the real product name — and refused with a
+  422 if the page won't give one, rather than searching for whatever the
+  block page happened to be titled). **The hotel field takes a place or
+  hotel name only; URLs are refused** — see CLAUDE.md §1 for why.
 - `backend/scraper.py` — opens each site's search URL in a real headless
   browser tab (in parallel), screenshots it, and extracts a price with a
   generic heuristic. Every verified result is appended to
@@ -134,11 +135,21 @@ found from actual use, not just this project's own testing); in short:
   contains "captcha") — a normal, fully-loaded page with a real answer
   (e.g. "not available for these dates") was getting mislabeled
   `blocked`. Now checks visible text for actual block phrasing.
-- **Hotel site URL templates are approximate** except Booking.com, which
-  supports dates/guests as real query parameters. The others may not filter
-  by your exact dates — verify on the linked page. Google Hotels results
-  can carry a generic destination-level title rather than one specific
-  property (it's an aggregator's summary, not a bug).
+- **Dates are proved, not assumed.** After loading, each site is asked
+  which dates it is pricing — its own check-in/check-out fields first, its
+  visible text second — and any price the page won't confirm is dropped
+  and listed under "skipped" as `wrong dates`. Google needs its `ts`
+  protobuf for this (plain `checkin`/`checkout` params do nothing); see
+  `sites.google_travel_ts()`.
+- **Most of the hotel results come via Google's provider panel**, which
+  lists one row per booking site (Agoda, EaseMyTrip, Yatra, MakeMyTrip,
+  Expedia...) with a nightly rate, a stay total and a booking link — the
+  only way to see rates from OTAs that block this tool's browser outright.
+  Only its organic `/travel/lodging/clk` rows are read; the paid `/aclk`
+  rows are ads listing room types at one provider, not competing sites.
+- **A city search returns fewer rows than a named hotel** (typically 2 vs
+  5): Google's provider panel only appears once a search resolves to one
+  specific property.
 - This is meant for **local experimentation and quick checks**, not yet as
   reliable as the Claude Code skills (`ecommerce-deal-finder`,
   `hotel-deal-finder`), which do real per-page judgment with a live

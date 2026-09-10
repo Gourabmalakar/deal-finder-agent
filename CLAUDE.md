@@ -21,6 +21,13 @@ its work: live screenshot, direct booking/buy link, and price history.
    (blocked, CAPTCHA, out of stock, region-locked, listing doesn't match the
    product), say so explicitly in the report. A shorter list the agent
    actually confirmed beats a padded one it didn't.
+   **For hotels this has a hard edge: a rate is reported only if the page it
+   came from was seen stating the requested check-in/check-out dates.** A
+   price for the wrong stay is not a cheaper price, it is a wrong answer, and
+   unlike a wrong product it cannot be spotted by eye. Google ignores plain
+   `checkin`/`checkout` params entirely and will quote its own default dates
+   in a page that otherwise looks perfectly correct — which is exactly why
+   the check is "what does the page itself say", not "what did we ask for".
 4. **Be a good citizen of the sites it checks.** One page load per candidate,
    no repeated hammering of the same URL, no attempts to bypass bot detection
    or CAPTCHAs (that's a prohibited action for this agent regardless of
@@ -34,7 +41,17 @@ its work: live screenshot, direct booking/buy link, and price history.
 | | |
 |---|---|
 | **E-commerce mode** | User gives a product URL (or a plain description). Agent identifies the product, works out its category, checks that category's top sites, and returns the **5 cheapest verified prices** with exact product-page links, screenshots, and price history. |
-| **Hotel mode** | User gives a place, dates, guest count, and optionally links from Booking/MMT/Agoda etc. Agent checks the default hotel sites (plus any links supplied) and returns the **5 cheapest verified rates** for those exact dates/guests, with links and screenshots. |
+| **Hotel mode** | User gives a place or hotel name, dates and guest count. Agent checks the default hotel sites and returns the **5 cheapest verified rates for those exact dates**, with booking links and screenshots. Rates the site wouldn't confirm as being for those dates are dropped and listed as skipped. |
+
+**The webapp does not take hotel URLs.** It was built and then withdrawn: it
+had to read the property name off a page hotel sites routinely refuse to
+serve an automated browser, and a name read off a blocked page — literally
+"Access Denied" — was then searched for everywhere else, returning three
+confidently wrong hotels. Typing the name is more reliable and faster. A
+skill session driving a real browser can still open a link the user hands it;
+the automated path can't do that reliably and no longer pretends to. The same
+guard now applies to product links: if the pasted page's title isn't a usable
+product name, the request is refused rather than searched for.
 
 Both modes are **decision support**, not a booking engine. The output is
 always a list Gourab (or whoever is using this) acts on manually.
@@ -141,6 +158,10 @@ Registered in `.claude/settings.json`.
   currency_native, notes`. This is the tool's own price-history record,
   independent of third-party price-history sites, and it only grows more
   useful the more it's used. Never edit past rows, only append.
+  **Local only — gitignored, not committed.** It is a record of what its
+  user actually searched for and when (plus the OTA click-tracking tokens
+  carried in outbound booking links), which does not belong in a public
+  repo. It is created automatically on first run if missing.
 - `runs/` — scratch space for screenshots captured during a session
   (gitignored). Deliver them to the user via `SendUserFile` or an Artifact;
   don't leave the user hunting for a local path.

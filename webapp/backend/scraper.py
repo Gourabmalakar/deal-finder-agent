@@ -45,6 +45,29 @@ UA = (
 )
 
 
+async def _new_context(browser, locale: str | None = None):
+    """One place to create browser contexts.
+
+    Hotel searches pass locale="en-IN"; product searches deliberately pass
+    nothing, and the asymmetry is load-bearing in both directions.
+
+    Hotels need it because Booking.com geo-detects and served its entire
+    results page in Hindi ("गुरु. 24 दिसं."), which left the date check
+    unable to read Booking's own dates and dropped a correctly-priced site
+    as though it had ignored the request. (Its Hindi budget slider had
+    already caused a separate misread earlier.)
+
+    Products must NOT have it: amazon.in answers a search URL with a file
+    download rather than a page whenever any explicit locale is set —
+    "Page.goto: Download is starting", tested identically for en-IN, en-GB
+    and en-US, and gone the moment the option is dropped. Setting one
+    globally turned every Amazon check into an error."""
+    kwargs = {"user_agent": UA, "viewport": {"width": 1280, "height": 900}}
+    if locale:
+        kwargs["locale"] = locale
+    return await browser.new_context(**kwargs)
+
+
 def _clean_price(raw: str) -> float | None:
     try:
         return float(raw.replace(",", ""))
@@ -404,6 +427,10 @@ def _extract_top_price_and_link(html: str, base_url: str, domain: str | None = N
     _DENYLIST = ("filter", "select all", "sort by", "clear all", "price range",
                  "budget", "बजट", "exchange", "cashback", "instant discount")
     _RANGE_RE = re.compile(r"₹\s?[\d][\d,.]*\s*[-–to]{1,4}\s*₹\s?[\d][\d,.]*")
+    # "Above ₹ 30,000", "Under ₹2,000" — the open-ended end of the same
+    # price-filter list, which has no second ₹ for _RANGE_RE to catch.
+    _FILTER_BOUND_RE = re.compile(r"^\s*(above|under|below|upto|up to|over|less than)\s*₹", re.I)
+    _CURRENT_PRICE_RE = re.compile(r"current price\s*₹\s?([\d][\d,]{2,})", re.I)
 
     soup = BeautifulSoup(html, "html.parser")
     candidates: list[tuple[float, str | None, str | None]] = []
@@ -414,6 +441,28 @@ def _extract_top_price_and_link(html: str, base_url: str, domain: str | None = N
         price = _clean_price(m.group(1))
         if price is None or price < 50:  # filter noise like "₹5 off"
             continue
+
+        # Check the price node's OWN text for filter chrome before anything
+        # else. The title-based guards below only run once the 6-level walk
+        # finds an ancestor whose text doesn't start with a ₹ — and a price
+        # FILTER's every ancestor starts with one, so a filter bucket
+        # sailed past all of them with title=None and full_text="".
+        # Confirmed live: EaseMyTrip's "₹ 1 - ₹ 2,000 / ₹ 2,001 - ₹ 4,000 /
+        # Above ₹ 30,000" per-night filter list made a Goa search report
+        # "₹2,000" as the cheapest rate, which is not a rate at all.
+        own_text = el.strip()
+        if _RANGE_RE.search(own_text) or _FILTER_BOUND_RE.match(own_text):
+            continue
+
+        # Booking.com writes both prices into one string for screen readers:
+        # "Original price ₹ 17,998. Current price ₹ 17,458." — taking the
+        # first ₹ there quotes the crossed-out price, i.e. more than the
+        # hotel actually charges.
+        cur = _CURRENT_PRICE_RE.search(own_text)
+        if cur:
+            better = _clean_price(cur.group(1))
+            if better is not None and better >= 50:
+                price = better
 
         # A NARROW check first, just the closest 3 ancestors: catches a
         # badge like "Upto ₹62,050 Off on Exchange" that sits right next
@@ -653,25 +702,45 @@ def _extract_google_hotel_offers(html: str) -> list[dict]:
     discarding the rest was why a pasted hotel link came back with
     nothing to compare against.
 
-    The "ends with 'Visit site'" test is what separates these from the
-    sponsored ads for OTHER hotels elsewhere on the page, which end with
-    "Visit Booking.com" / "Visit Agoda" instead (verified live)."""
+    The href is what separates a real provider offer from an ad, and the
+    distinction matters: "ends with 'Visit site'" alone was not enough.
+    Google's panel carries BOTH
+
+      * organic provider rows, linking to /travel/lodging/clk — one per
+        booking site (Agoda, EaseMyTrip.com, Yatra.com, ...), each with a
+        nightly price and a stay total; and
+      * paid rows, linking to /aclk — which are ads, and are per ROOM TYPE
+        rather than per provider.
+
+    Both end in "Visit site", so keying on that text alone filled the
+    results with "Superior Room", "Deluxe Room Double" and "Suite" as if
+    they were competing booking sites — four of five rows in a live run
+    were room types at one provider, which is not a price comparison at
+    all. Only the organic rows are taken.
+
+    Each organic row reads: <provider>, ..., "Nightly price with taxes +
+    fees", "Stay total with taxes + fees", ₹nightly, ₹nightly, ₹nightly,
+    ₹total, "Visit site" — so the first price is the nightly rate and the
+    last is the whole stay. Both are kept; the nightly rate is what gets
+    compared, because that is what every other site in the list quotes."""
     soup = BeautifulSoup(html, "html.parser")
     offers: dict[str, dict] = {}
     for a in soup.find_all("a", href=True):
+        if "/travel/lodging/clk" not in a["href"]:
+            continue  # an ad (/aclk) or some other link — see docstring
         text = a.get_text("\n", strip=True)
         if not text or "₹" not in text:
             continue
         lines = [ln.strip() for ln in text.split("\n") if ln.strip()]
         if not lines or lines[-1].lower() != "visit site":
-            continue  # a sponsored ad for a different property, or not an offer row
+            continue
 
-        m = PRICE_RE.search(text)
-        if not m:
+        prices = [p for p in (_clean_price(m) for m in PRICE_RE.findall(text))
+                  if p is not None and p >= 50]
+        if not prices:
             continue
-        price = _clean_price(m.group(1))
-        if price is None or price < 50:
-            continue
+        price = prices[0]
+        stay_total = prices[-1] if prices[-1] > price else None
 
         if "official site" in text.lower():
             provider = "Official site"
@@ -681,17 +750,96 @@ def _extract_google_hotel_offers(html: str) -> list[dict]:
         if not provider:
             continue
 
-        # Same provider can appear twice (a featured/sponsored placement
-        # plus its normal row) — keep the cheaper.
+        # Same provider can appear twice (a featured placement plus its
+        # normal row) — keep the cheaper.
         existing = offers.get(provider.lower())
         if existing and existing["price_inr"] <= price:
             continue
         offers[provider.lower()] = {
             "provider": provider,
             "price_inr": price,
+            "stay_total_inr": stay_total,
             "link": a.get("href"),
         }
     return sorted(offers.values(), key=lambda o: o["price_inr"])
+
+
+_MONTHS = ["January", "February", "March", "April", "May", "June", "July",
+           "August", "September", "October", "November", "December"]
+
+
+def _date_renderings(iso_date: str) -> list[str]:
+    """Every spelling of one date a hotel site plausibly renders.
+
+    Both the abbreviated and full month name are needed, and neither
+    contains the other in the order sites write them: Booking.com renders
+    "24 December 2026", in which "24 Dec" does not appear — checking only
+    the short form marked Booking.com and Cleartrip as pricing the wrong
+    dates when they were pricing the right ones."""
+    y, m, d = (int(x) for x in iso_date.split("-"))
+    full = _MONTHS[m - 1]
+    short = full[:3]
+    out = [
+        iso_date,                       # 2026-12-24
+        f"{d:02d}/{m:02d}/{y}",         # 24/12/2026
+        f"{m:02d}/{d:02d}/{y}",         # 12/24/2026
+        f"{d}-{m:02d}-{y}",             # 24-12-2026
+    ]
+    for mon in {full, short}:
+        out += [f"{mon} {d}", f"{d} {mon}", f"{mon} {d:02d}", f"{d:02d} {mon}"]
+    return out
+
+
+async def _page_confirms_dates(page, checkin: str, checkout: str) -> bool:
+    """Ask the page which dates it is actually pricing, and believe only
+    the page.
+
+    This is the whole answer to "the dates are not being passed on". Every
+    site here takes dates in its URL, and two of the most useful ones
+    quietly ignore them — Google outright (its plain checkin/checkout
+    params do nothing), others when a date is unavailable or the format is
+    off. A price for the wrong dates looks exactly like a price for the
+    right ones, so it is the one error a user cannot catch by eye.
+
+    Preferred oracle is the site's own check-in/check-out form fields
+    (Google fills them with "Thu, Dec 24" / "Sat, Dec 26" — authored by
+    Google, not inferred by us). Falling back to the page's visible text
+    is weaker but still evidence: the date has to appear somewhere on a
+    page that is genuinely priced for it."""
+    try:
+        values = await page.evaluate("""() => {
+            const out = {};
+            const sel = 'input, [role="textbox"], [data-testid], [data-cy]';
+            document.querySelectorAll(sel).forEach(el => {
+                const label = (el.getAttribute('aria-label') || el.getAttribute('placeholder')
+                    || el.getAttribute('data-testid') || el.getAttribute('data-cy') || '').toLowerCase();
+                const val = (el.value || el.textContent || '').trim();
+                if (!val || val.length > 60) return;
+                const isDateField = label.includes('date') || label.includes('check');
+                if (!isDateField) return;
+                if (label.includes('check-in') || label.includes('check in')
+                    || label.includes('checkin') || label.includes('start') || label.includes('from'))
+                    out.checkin = out.checkin || val;
+                if (label.includes('check-out') || label.includes('check out')
+                    || label.includes('checkout') || label.includes('end') || label.includes('to'))
+                    out.checkout = out.checkout || val;
+            });
+            return out;
+        }""")
+    except Exception:  # noqa: BLE001
+        values = {}
+
+    if values.get("checkin") and values.get("checkout"):
+        in_ok = any(r.lower() in values["checkin"].lower() for r in _date_renderings(checkin))
+        out_ok = any(r.lower() in values["checkout"].lower() for r in _date_renderings(checkout))
+        return bool(in_ok and out_ok)
+
+    try:
+        text = (await page.inner_text("body")).lower()
+    except Exception:  # noqa: BLE001
+        return False
+    return (any(r.lower() in text for r in _date_renderings(checkin))
+            and any(r.lower() in text for r in _date_renderings(checkout)))
 
 
 async def _check_one_hotel_site(context, domain: str, place: str, checkin: str,
@@ -699,7 +847,8 @@ async def _check_one_hotel_site(context, domain: str, place: str, checkin: str,
     url = hotel_search_url(domain, place, checkin, checkout, guests)
     page = await context.new_page()
     result = {"site": domain, "url": url, "status": "error", "price_inr": None,
-              "title": None, "booking_url": None, "screenshot": None, "note": ""}
+              "title": None, "booking_url": None, "screenshot": None,
+              "dates_accurate": None, "note": ""}
     try:
         await page.goto(url, timeout=NAV_TIMEOUT_MS, wait_until="domcontentloaded")
         # A blind fixed wait was the wrong tool here: confirmed live,
@@ -730,6 +879,12 @@ async def _check_one_hotel_site(context, domain: str, place: str, checkin: str,
         await page.screenshot(path=str(shot_path), full_page=False)
         result["screenshot"] = f"/screenshots/{run_dir.name}/{shot_path.name}"
 
+        # Ask the page itself, before reading any price off it, whether it
+        # is pricing the dates that were asked for.
+        dates_ok = await _page_confirms_dates(page, checkin, checkout)
+        result["dates_accurate"] = dates_ok
+        stay = f"{checkin} to {checkout}"
+
         # Google's property panel carries several providers' prices for
         # this exact hotel, each with a booking link — strictly more
         # useful than the single headline number the generic extractor
@@ -740,16 +895,19 @@ async def _check_one_hotel_site(context, domain: str, place: str, checkin: str,
                 return [{
                     "site": o["provider"],
                     "url": url,
-                    "status": "ok",
+                    "status": "ok" if dates_ok else "wrong_dates",
                     "price_inr": o["price_inr"],
+                    "stay_total_inr": o.get("stay_total_inr"),
                     "title": page_title.replace(" - Google hotels", "").strip() or place,
                     "booking_url": _absolutize(o["link"], "https://www.google.com/") or url,
                     "screenshot": result["screenshot"],
-                    "dates_accurate": False,
-                    "note": ("Google's own listed price for this property, for its default "
-                             "1-night stay — verified live that Google ignores requested "
-                             "check-in/check-out params, so this is NOT priced for your "
-                             "dates. Open the link to price them."),
+                    "dates_accurate": dates_ok,
+                    "note": (f"Google's listed price at this provider for {stay}, confirmed "
+                             "against the dates Google shows in its own check-in/check-out "
+                             "fields. Confirm taxes and cancellation on the provider's site."
+                             if dates_ok else
+                             "Dropped: Google did not confirm it was pricing your dates, so "
+                             "this price is for some other stay."),
                 } for o in offers[:5]]
 
         price, link, title = _extract_top_price_and_link(
@@ -768,17 +926,16 @@ async def _check_one_hotel_site(context, domain: str, place: str, checkin: str,
                 else:
                     result["note"] = "No visible rate found for these dates — check the link manually."
         else:
-            result["status"] = "ok"
             result["price_inr"] = price
             result["title"] = title or place
             result["booking_url"] = _absolutize(link, url) or url
-            google_ignores_dates = "google." in domain
-            result["dates_accurate"] = not google_ignores_dates
+            result["status"] = "ok" if dates_ok else "wrong_dates"
             result["note"] = (
-                "Google ignores requested check-in/check-out (verified live), so this is "
-                "its default-date price, not yours — open the link to price your dates."
-                if google_ignores_dates else
-                "Priced for your dates — confirm taxes and cancellation on the site."
+                f"Priced for {stay}, confirmed against the dates the site itself shows "
+                "— check taxes and cancellation before booking."
+                if dates_ok else
+                f"Dropped: this page never confirmed it was pricing {stay}, so the rate "
+                "shown on it belongs to some other stay."
             )
     except Exception as exc:  # noqa: BLE001
         if domain in _KNOWN_BLOCKED_DOMAINS:
@@ -811,168 +968,31 @@ def _log_price_history(rows: list[dict]):
             writer.writerow(r)
 
 
-_TITLE_BRANDING_RE = re.compile(
-    r"\s*[-|·–:]\s*(google hotels?|google|booking\.com[^|]*|makemytrip[^|]*|agoda[^|]*|"
-    r"goibibo[^|]*|easemytrip[^|]*|yatra[^|]*|trip\.com[^|]*|expedia[^|]*|hotels\.com[^|]*)\s*$",
-    re.I,
-)
-
-
-def _clean_place_title(title: str) -> str:
-    """Strip a site's own branding off a page title before using it as the
-    name to search other sites with. Confirmed live: a pasted Google
-    Hotels link resolved to "Hotel Rio Meridian - Google hotels", and
-    searching other sites for THAT (branding included) matched nothing."""
-    out = title.strip()
-    prev = None
-    while prev != out:
-        prev = out
-        out = _TITLE_BRANDING_RE.sub("", out).strip()
-    return out or title.strip()
-
-
-_BAD_TITLE_RE = re.compile(
+_BLOCKED_TITLE_RE = re.compile(
     r"access denied|just a moment|attention required|are you a human|robot check|"
     r"security check|forbidden|not found|^error|blocked|captcha|unavailable|"
-    r"page not found", re.I)
-
-_GENERIC_SLUG_WORDS = {
-    "search", "searchresults", "results", "hotels", "hotel", "index", "home",
-    "booking", "travel", "lodging", "property", "properties", "detail", "details",
-    "en", "in", "us", "gb", "enin", "engb", "www", "html", "php", "rooms", "stay",
-}
+    r"page not found|service unavailable", re.I)
 
 
-def _name_from_url_slug(url: str) -> str | None:
-    """Pull a property name out of a URL path — for a hotel's OWN website
-    ("/en-in/hotels/taj-mahal-palace-mumbai") this is far more reliable
-    than the page <title>.
+def is_usable_product_title(title: str | None, url: str) -> bool:
+    """Is this page title a product name, or the site's own name on a page
+    that never loaded the product?
 
-    Confirmed live and the reason this exists: tajhotels.com bot-blocked
-    our request, and its error page's title — the literal words "Access
-    Denied" — was then used as the hotel name to search every other site
-    with, producing three confidently-wrong results. A slug can't fail
-    that way."""
-    path = urlparse(url).path
-    for seg in reversed([s for s in path.split("/") if s]):
-        seg = re.sub(r"\.(html?|php|aspx?)$", "", seg, flags=re.I)
-        words = [w for w in re.split(r"[-_+]+", seg) if w and not w.isdigit() and len(w) > 1]
-        meaningful = [w for w in words if w.lower() not in _GENERIC_SLUG_WORDS]
-        if len(meaningful) >= 2:
-            return " ".join(meaningful)
-    return None
-
-
-def _usable_title(title: str | None) -> bool:
-    """A blocked/error page's title must never become the search term."""
-    if not title or len(title.strip()) < 4:
+    Confirmed live on amazon.in: a URL whose product page didn't serve
+    came back titled exactly "Amazon.in". That got searched for on every
+    other site, which returned a shampoo called "Amazon Series" — a
+    confident answer to a question nobody asked. A title that is just the
+    site's own domain words carries no product in it, so it is treated as
+    a failure to read the page, not as the product's name."""
+    if not title:
         return False
-    return not _BAD_TITLE_RE.search(title)
-
-
-def _guess_place_from_url(url: str) -> str | None:
-    """A hotel search-results page's own <title> tends to be marketing
-    copy wrapped around the actual query ("Booking.com: खोज नतीजे: Hotel
-    Sepoy Grande. Book your hotel now!" — confirmed live), which pollutes
-    the hint used to search other sites far more than a product PDP's
-    title does. The URL's own query params are cleaner and cover the
-    common OTA conventions (including this tool's own generated URLs, so
-    a user pasting one of our own site's links round-trips correctly)."""
-    qs = parse_qs(urlparse(url).query)
-    for key in ("ss", "city", "city.name", "Hotel", "q", "keyword", "destination"):
-        vals = qs.get(key)
-        if vals and vals[0] and vals[0].strip().upper() != "NA":
-            return unquote_plus(vals[0])
-    return None
-
-
-async def resolve_hotel_origin(browser, url: str) -> tuple[list[dict], str | None]:
-    """Open a user-supplied hotel/booking-page URL directly — the hotel
-    equivalent of resolve_origin() for products. Reads the page's own
-    title (so other sites get searched by the real property name, not the
-    raw URL) and grabs its own price/screenshot as a confirmed data point,
-    exactly as booked/priced on the page the user actually gave us."""
-    context = await browser.new_context(user_agent=UA, viewport={"width": 1280, "height": 900})
-    run_dir = _new_run_dir("hotel-origin")
-    page = await context.new_page()
-    domain = urlparse(url).netloc.replace("www.", "")
-    result = {"site": domain, "url": url, "status": "error", "price_inr": None,
-              "title": None, "booking_url": url, "screenshot": None,
-              "note": "The link you provided."}
-    title_text = None
-    try:
-        await page.goto(url, timeout=NAV_TIMEOUT_MS, wait_until="domcontentloaded")
-        try:
-            await page.wait_for_selector("text=/₹/", timeout=8000)
-        except Exception:  # noqa: BLE001
-            pass
-        await page.wait_for_timeout(800)
-        title_text = (await page.title() or "").strip() or None
-        html = await page.content()
-        shot_path = run_dir / "origin.png"
-        await page.screenshot(path=str(shot_path), full_page=False)
-        result["screenshot"] = f"/screenshots/{run_dir.name}/{shot_path.name}"
-        result["title"] = title_text[:150] if title_text else None
-        clean_title = _clean_place_title(title_text) if title_text else None
-
-        # Pasting a Google Hotels link is the best case, not a dead end:
-        # that page lists every provider's price for the property. Return
-        # them all rather than one number off the same page (which is what
-        # made a pasted link come back with nothing to compare against).
-        if "google." in domain and "/travel/" in url:
-            offers = _extract_google_hotel_offers(html)
-            if offers:
-                origin_rows = [{
-                    "site": o["provider"],
-                    "url": url,
-                    "status": "ok",
-                    "price_inr": o["price_inr"],
-                    "title": clean_title or url,
-                    "booking_url": _absolutize(o["link"], "https://www.google.com/") or url,
-                    "screenshot": result["screenshot"],
-                    "dates_accurate": False,
-                    "note": ("Google's own listed price for the link you gave, for its default "
-                             "1-night stay — verified live that Google ignores requested "
-                             "check-in/check-out params, so this is NOT priced for your "
-                             "dates. Open the link to price them."),
-                } for o in offers[:5]]
-                await page.close()
-                await context.close()
-                resolved = (_guess_place_from_url(url)
-                            or (clean_title if _usable_title(clean_title) else None)
-                            or _name_from_url_slug(url))
-                return origin_rows, resolved
-
-        price, _, _ = _extract_top_price_and_link(html, url, domain=domain)
-        if price is not None:
-            result["status"] = "ok"
-            result["price_inr"] = price
-        else:
-            result["status"] = "no_match"
-            result["note"] = "The link you provided — no price detected automatically, open it to check."
-    except Exception as exc:  # noqa: BLE001
-        if domain in _KNOWN_BLOCKED_DOMAINS:
-            result["status"] = "blocked"
-            result["note"] = _KNOWN_BLOCKED_NOTE
-        else:
-            result["status"] = "error"
-            result["note"] = f"Could not load the link you provided ({type(exc).__name__})."
-    finally:
-        if not page.is_closed():
-            await page.close()
-            await context.close()
-    # Prefer the URL's own query param over the page <title> for the name
-    # used to search OTHER sites — see _guess_place_from_url's docstring,
-    # and strip the site's own branding off the title (_clean_place_title).
-    # Order matters: an OTA search URL's query param is cleanest; a real
-    # property page's title is next best; the URL slug is the fallback for
-    # when the page is blocked and its title is an error message.
-    resolved_place = (
-        _guess_place_from_url(url)
-        or (_clean_place_title(title_text) if _usable_title(title_text) else None)
-        or _name_from_url_slug(url)
-    )
-    return [result], resolved_place
+    cleaned = title.strip()
+    if len(cleaned) < 8 or _BLOCKED_TITLE_RE.search(cleaned):
+        return False
+    host_words = {w for w in re.split(r"[.\-_]+", urlparse(url).netloc.lower())
+                  if w and w not in ("www", "com", "in", "co", "net", "org")}
+    title_words = {w for w in _tokenize(cleaned) if w}
+    return bool(title_words - host_words - {"in", "com"})
 
 
 async def resolve_origin(browser, url: str) -> tuple[dict, str | None]:
@@ -980,7 +1000,7 @@ async def resolve_origin(browser, url: str) -> tuple[dict, str | None]:
     ecommerce-deal-finder skill): read its real title so category-matching
     and the other sites' searches use the actual product name, not the raw
     URL text, and grab its own price/screenshot as a confirmed data point."""
-    context = await browser.new_context(user_agent=UA, viewport={"width": 1280, "height": 900})
+    context = await _new_context(browser)
     run_dir = _new_run_dir("origin")
     page = await context.new_page()
     domain = urlparse(url).netloc.replace("www.", "")
@@ -1027,7 +1047,7 @@ async def resolve_origin(browser, url: str) -> tuple[dict, str | None]:
 
 async def run_product_search(browser, query: str, sites: list[str],
                                origin_result: dict | None = None) -> dict:
-    context = await browser.new_context(user_agent=UA, viewport={"width": 1280, "height": 900})
+    context = await _new_context(browser)
     run_dir = _new_run_dir("product")
     tasks = [_check_one_product_site(context, d, query, run_dir) for d in sites]
     results = await asyncio.gather(*tasks)
@@ -1055,9 +1075,8 @@ async def run_product_search(browser, query: str, sites: list[str],
 
 
 async def run_hotel_search(browser, place: str, checkin: str, checkout: str,
-                            guests: int, sites: list[str],
-                            origin_results: list[dict] | None = None) -> dict:
-    context = await browser.new_context(user_agent=UA, viewport={"width": 1280, "height": 900})
+                            guests: int, sites: list[str]) -> dict:
+    context = await _new_context(browser, locale="en-IN")
     run_dir = _new_run_dir("hotel")
     tasks = [_check_one_hotel_site(context, d, place, checkin, checkout, guests, run_dir) for d in sites]
     per_site = await asyncio.gather(*tasks)
@@ -1066,8 +1085,12 @@ async def run_hotel_search(browser, place: str, checkin: str, checkout: str,
     # Each site returns a LIST now — Google Hotels contributes one row per
     # booking provider it lists for the property, not just one row total.
     results = [r for rows in per_site for r in rows]
-    all_results = results + list(origin_results or [])
+    all_results = results
 
+    # "ok" now means the site confirmed it was pricing the requested dates
+    # — a row that couldn't prove that comes back as "wrong_dates" and is
+    # reported as skipped rather than ranked. A price for the wrong stay is
+    # not a cheaper price, it's a wrong answer.
     ok = [r for r in all_results if r["status"] == "ok"]
     ok.sort(key=lambda r: r["price_inr"])
     cheapest = ok[:5]

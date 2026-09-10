@@ -99,6 +99,48 @@ always-on backend once hosted (see "Hosting" below).
                     sites" list
 ```
 
+### How hotel dates are made trustworthy
+
+A wrong hotel price is visible; a *right* price for the *wrong stay* is
+not. It is the one error a user can't catch by eye, so the hotel path is
+built around proving dates rather than requesting them.
+
+**Asking properly.** Google Travel ignores plain `checkin`/`checkout`
+params outright — three different date ranges (including Christmas)
+returned identical prices and an unchanged "Sep 30 - Oct 1" on the page.
+Its dates live in a base64url protobuf `ts` param, whose layout was
+recovered by harvesting seven real `ts` values out of Google's own
+"popular dates" links and decoding them field by field
+(`sites.google_travel_ts()`).
+
+**Verifying it worked.** `scraper._page_confirms_dates()` asks each loaded
+page which dates it is actually pricing — the site's own check-in/check-out
+form fields first (Google fills them "Thu, Dec 24"; Booking exposes them
+as `data-testid="date-display-field-start"`), the visible text second. Any
+row the page won't confirm is returned as `wrong_dates` and reported under
+skipped, never ranked. The evaluator enforces this automatically as
+`priced_for_requested_dates`.
+
+This is the general principle worth keeping: **encode what you can, but
+believe only what the page says back.** A hand-built date encoding that
+silently drifts would produce confidently wrong prices; a self-checking
+one degrades to "no result" instead.
+
+### Where the cross-site hotel prices actually come from
+
+Five of the seven OTAs in `data/hotel_sites.yaml` cannot be read directly
+(MakeMyTrip, Goibibo and Yatra block automated browsers; Agoda drops the
+query; EaseMyTrip only sometimes renders). Their rates still appear,
+because Google's property panel lists one row per booking provider with a
+nightly price, a stay total and an outbound link — parsed by
+`_extract_google_hotel_offers()`.
+
+Only Google's **organic** rows (`/travel/lodging/clk`) are read. Its paid
+rows (`/aclk`) look identical in text — both end "Visit site" — but are
+per *room type* at a single provider, so keying on the text alone once
+filled the results with "Superior Room / Deluxe Room Double / Suite" as if
+those were competing booking sites.
+
 ### The scraper's extraction approach
 
 `webapp/backend/scraper.py` opens each site's public **search results**

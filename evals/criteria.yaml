@@ -94,6 +94,24 @@ hotel_only:
       subagent glance at the screenshot.
     automatic: true
     subagent_follow_up: true
+  - id: priced_for_requested_dates
+    description: >
+      Every ranked price was proved to be for the requested stay: the site
+      itself was seen stating those check-in/check-out dates (its own date
+      fields, else its visible text) on the page the price was read from.
+      A price the page won't vouch for is dropped and reported as skipped,
+      never ranked. This is stricter than dates_and_guests_match, which
+      only checks the request round-trips into the response — Google
+      silently ignores plain checkin/checkout params and will happily
+      quote its own default stay, which looks identical to a correct
+      answer.
+    automatic: true
+  - id: no_google_snapshot
+    description: >
+      A hotel run returns actual per-provider prices with booking links,
+      not one row pointing at a Google search page. Google's property
+      panel is a source to be parsed, not an answer to hand back.
+    automatic: false
 
 pass_threshold: >
   A run "passes" when every automatic criterion above is satisfied. A

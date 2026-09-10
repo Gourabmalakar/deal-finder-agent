@@ -21,6 +21,27 @@ that environment — open this folder there and talk to it. It is not a
 background server, has no API of its own, and never places an order or
 books anything; every output is a list of links you act on yourself.
 
+## Credentials, and what runs where
+
+There are **two independent paths**, and only one of them involves Claude
+at all:
+
+- **The webapp** (`webapp/`) is plain Python — FastAPI plus a headless
+  Playwright browser. It calls no LLM, holds no API key, and reads no
+  credential of any kind. Anyone can clone this repo and run it; it will
+  work with no account, no key and no sign-in.
+- **The Claude Code path** (`.claude/`) is markdown: skills, subagents,
+  slash commands and one shell hook. Those are *instructions* Claude
+  follows in your own session, so they run on whatever Claude account is
+  logged in on that machine. Nothing in this repo stores or transmits that
+  login — Claude Code keeps its credentials in `~/.claude/`, outside the
+  repo entirely. Cloning this repo gives someone the instructions, never
+  the account.
+
+Nothing here reads a `.env`, and no secret has ever been committed. The
+one file deliberately kept out of version control is
+`data/price_history.csv`, which logs what was searched and when.
+
 ## Using it
 
 Open this folder in Claude Code (or the Claude desktop app's Code tab),
@@ -29,9 +50,10 @@ then either:
 - Paste a product URL (Amazon, Flipkart, Myntra, Ajio, Nykaa, Croma, …) or
   describe a product, and ask for the best price — or run
   `/find-deal <url or description>`.
-- Give a place, travel dates, and guest count (optionally with links from
-  Booking.com / MakeMyTrip / Agoda / Goibibo), and ask for the best hotel
-  rate — or run `/find-hotel <place, dates, guests, links>`.
+- Give a place or hotel name, travel dates and guest count, and ask for the
+  best hotel rate — or run `/find-hotel <place, dates, guests>`. Every rate
+  returned was proved to be for *those* dates: the site itself had to be seen
+  stating them, or the price is dropped rather than shown.
 
 A hook (`.claude/hooks/detect_deal_intent.sh`) notices shopping/hotel intent
 in your message automatically and reminds Claude to follow the right skill

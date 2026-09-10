@@ -103,6 +103,13 @@ def _check_product_or_hotel(mode: str, request: dict, result: dict) -> list[str]
                 or result.get("guests") != request.get("guests")):
             failures.append("dates_and_guests_match")
 
+        # priced_for_requested_dates — the stricter one, and the reason it
+        # exists: a hotel price for some other stay is a wrong answer, not
+        # a cheaper one. Every ranked row must carry dates_accurate=True,
+        # meaning the site itself was seen stating those dates.
+        if any(r.get("dates_accurate") is not True for r in cheapest):
+            failures.append("priced_for_requested_dates")
+
     return failures
 
 

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import re
 import time
-from urllib.parse import urlparse
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -101,8 +100,19 @@ async def product_search(body: ProductQuery):
     search_text = raw
     if raw.lower().startswith(("http://", "https://")):
         origin_result, resolved_title = await scraper.resolve_origin(browser, raw)
-        if resolved_title:
-            search_text = resolved_title
+        # A title has to actually name a product before other sites get
+        # searched for it. The same failure that killed hotel links happens
+        # here: a page the site refuses to serve us still HAS a title, and
+        # amazon.in's bot/404 page is titled just "Amazon.in" — which was
+        # then searched for everywhere else and came back with shampoo.
+        if not scraper.is_usable_product_title(resolved_title, raw):
+            raise HTTPException(
+                422,
+                "Couldn't read a product name off that link — the site served a block "
+                "or error page instead of the product. Type the product name instead "
+                "(e.g. \"boAt Airdopes 141\").",
+            )
+        search_text = resolved_title
 
     catalog = load_category_sites()
     category, sites = pick_category(search_text, catalog)
@@ -134,38 +144,26 @@ async def hotel_search(body: HotelQuery):
     raw_place = body.place.strip()
     browser = _state["browser"]
 
-    origin_results: list[dict] = []
-    origin_domain = None
-    place = raw_place
+    # Hotel URLs are deliberately not accepted. Resolving a pasted booking
+    # link into a property name was tried and withdrawn: it depended on
+    # reading a name out of a page that hotel sites routinely refuse to
+    # serve us, and a name read off a blocked page ("Access Denied") got
+    # searched for on every other site, producing confidently wrong
+    # hotels. Typing the name is both more reliable and faster.
     if raw_place.lower().startswith(("http://", "https://")):
-        origin_results, resolved_title = await scraper.resolve_hotel_origin(browser, raw_place)
-        if not resolved_title:
-            # Never search other sites for an unidentified link. Confirmed
-            # live: a bot-blocked hotel website returned an "Access Denied"
-            # error page, whose title was then used as the hotel name —
-            # every other site got searched for "Access Denied" and
-            # returned confidently wrong results.
-            raise HTTPException(
-                422,
-                "Couldn't identify a hotel from that link — the site may have blocked "
-                "us, or the page doesn't name the property. Type the hotel name instead.",
-            )
-        place = resolved_title
-        origin_domain = urlparse(raw_place).netloc.replace("www.", "")
+        raise HTTPException(
+            422,
+            "Type the hotel or city name instead of a link — e.g. \"Taj Mahal Palace "
+            "Mumbai\" or \"Goa\". Links were removed because booking sites block us "
+            "from reading them, which produced results for the wrong hotel.",
+        )
+    place = raw_place
 
     hotel_catalog = load_hotel_sites()
     sites = [s["domain"] for s in hotel_catalog["sites"]]
-    if origin_domain:
-        # Don't re-search the site the user's own link already came from.
-        # Compare on the bare domain so a site listed with a path
-        # ("google.com/travel/hotels") still matches an origin on
-        # google.com — otherwise a pasted Google link gets checked twice
-        # and the run comes back as two rows of the same page.
-        sites = [s for s in sites if s.split("/")[0] != origin_domain]
 
     result = await scraper.run_hotel_search(
         browser, place, body.checkin, body.checkout, body.guests, sites,
-        origin_results=origin_results,
     )
     result["sites_checked"] = sites
     result["origin_place"] = raw_place

@@ -14,6 +14,13 @@ webapp/test_runs/
 webapp/uptime.log
 webapp/uptime_launchd.log
 
+# Personal search log. Every row records something the user actually
+# searched for and when, plus the OTA click-tracking tokens embedded in
+# outbound booking links — a record of behaviour, not source code, and not
+# something to publish with a public repo. The file is created on first
+# run if missing.
+data/price_history.csv
+
 # Shared eval log — a growing local observability DB, not source. Unlike
 # data/price_history.csv (the intentional track record), this is a cache
 # of request/response JSON worth pruning, not versioning.
