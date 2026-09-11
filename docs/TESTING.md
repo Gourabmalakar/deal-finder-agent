@@ -1,5 +1,88 @@
 # Testing report — webapp scraper
 
+## Round 10 — real booking-site prices and links, not a Google page (2026-09-11)
+
+Gourab, with a screenshot: searching "Silver Sand Beach Resort Neil" for
+24-25 Sep returned **one** result — the Google page itself — though the
+dates on it were right. Then: "I didn't see the prices from booking,
+agoda etc, only the google page."
+
+Stated acceptance criterion: *user enters a hotel name and dates; the
+output is a list of prices and links on various sites for that hotel, on
+that date range.*
+
+### Root cause: Google has two layouts, and only one was handled
+
+"Hotel Rio Meridian" resolves straight to that property's panel, which
+carries the per-provider price list. "Silver Sand Beach Resort Neil"
+resolves instead to the Andaman **list view** — 81 hotels, the right one
+first — which has no provider list on it at all. The offer extractor
+found nothing, the generic price heuristic took over, and it reported the
+Google page as the answer.
+
+Fixed by reading the list view properly: each card is an `<h2>` with the
+hotel name and its own price. The card matching the search is followed
+through to that hotel's page, where the provider list lives. And the
+generic fallback for Google is gone entirely — if no provider list can be
+reached, the run reports nothing and says why, because a link to a Google
+search page is not a price.
+
+### The links now go to the booking sites
+
+Google's outbound rows are `/travel/lodging/clk` redirects — which both
+look like Google links and are. Each carries the provider's own deep link
+in its `pcurl` parameter, dates included, so that is what gets reported.
+Verified by opening one: the Booking.com link lands on Silver Sand Beach
+Resort Neil with `checkin=2026-09-24&checkout=2026-09-25` and the same
+rate the tool displayed.
+
+### Booking and Agoda were being checked, then hidden
+
+They came 6th and 7th of 14 providers, and the top-5 cut dropped them
+silently — indistinguishable, from the outside, from not having checked
+them. Every priced result is now reported: five ranked cards, the rest as
+"also checked, same dates — priced higher".
+
+### Four more bugs found while testing this
+
+- **Google paints prices before the links that go with them.** Reading
+  the HTML as soon as a ₹ appeared gave 18 cards and *zero* links, so
+  city searches found nothing to follow. Some list layouts ship no card
+  links at all (zero `ts=CAEa` anchors after six further seconds), so
+  each card is now resolved by hotel NAME, which always works.
+- **Sponsored blocks pack several hotels into one container** ("Sponsored
+  · Goa hotels W Goa ₹75,520 ... Ronil Goa ₹23,010"), which would pair a
+  heading with another hotel's price.
+- **The date check was flaky under load.** Seven sites are checked at
+  once and a page's date fields can still be empty at first read, which
+  dropped correctly-priced sites as "wrong dates". Now retried once.
+- **Two contradictory prices for one site.** Marina Bay Sands returned
+  "Booking.com ₹66,677" (Google's panel, for that exact property) and
+  "booking.com ₹110,972" (this tool's own read of Booking's search page).
+  Rows are now deduplicated per booking site, keeping the cheaper.
+- **Unattributed rates dropped.** On a city search Booking's nearest text
+  is its screen-reader string ("Original price ₹ 25,360. Current price
+  ₹ 22,824.") — a price with no property attached, which is not an answer.
+- **Plausibility band widened** to ₹600k/night after a true negative: The
+  Ritz London genuinely costs ₹189k-219k a night.
+
+### Results — 7 of 7 pass the stated criterion
+
+| Search | Dates | Sites priced | Cheapest |
+|---|---|---|---|
+| Silver Sand Beach Resort Neil | 24-25 Sep | 12 (official, Cleartrip, MMT, Yatra, Goibibo, Booking, Agoda, Skyscanner, Bluepillow, HomeToGo, Expedia, Hotels.com) | ₹7,559 |
+| Hotel Rio Meridian | 24-26 Dec | 5 (Agoda, Bag2Bag, Yatra, EaseMyTrip, BookMyBooking) | ₹5,683 |
+| The Taj Mahal Palace Mumbai | 10-12 Nov | 12 | ₹36,304 |
+| Marina Bay Sands Singapore | 10-12 Nov | 12 | ₹66,420 |
+| The Ritz London | 10-12 Nov | 8 | ₹189,080 |
+| Leela Palace Udaipur | 15-17 Oct | 12 | ₹84,360 |
+| Goa (city) | 24-26 Dec | 4 named hotels, each with a booking-site link | ₹1,015 |
+
+Every row carries its own booking-site link with the requested dates in
+it, and every row was date-confirmed on the page it came from.
+
+---
+
 ## Round 9 — dates actually solved; hotel URLs removed (2026-09-10)
 
 Gourab: "you are not able to effectively solve the date issue, it shows

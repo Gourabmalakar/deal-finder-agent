@@ -755,11 +755,21 @@ def _extract_google_hotel_offers(html: str) -> list[dict]:
         existing = offers.get(provider.lower())
         if existing and existing["price_inr"] <= price:
             continue
+        # Google's outbound row is a /travel/lodging/clk redirect, which
+        # both looks like a Google link and is one. It carries the
+        # provider's OWN deep link in its `pcurl` param, dates included
+        # (booking.com/...?checkin=..., agoda.com/...?CkIn=...), so use
+        # that: the user asked for prices and links on the actual sites,
+        # and a redirect through Google is neither.
+        href = a.get("href") or ""
+        provider_url = parse_qs(urlparse(href).query).get("pcurl", [None])[0]
+
         offers[provider.lower()] = {
             "provider": provider,
             "price_inr": price,
             "stay_total_inr": stay_total,
-            "link": a.get("href"),
+            "link": provider_url or href,
+            "via_google_redirect": provider_url is None,
         }
     return sorted(offers.values(), key=lambda o: o["price_inr"])
 
@@ -842,6 +852,162 @@ async def _page_confirms_dates(page, checkin: str, checkout: str) -> bool:
             and any(r.lower() in text for r in _date_renderings(checkout)))
 
 
+def _extract_google_hotel_cards(html: str) -> list[dict]:
+    """Read Google's RESULT CARDS — one per hotel: name, nightly price,
+    stay total, and the link to that hotel's own Google page.
+
+    Google answers a hotel search in one of two layouts, and the tool has
+    to handle both. Searching "Hotel Rio Meridian" resolves straight to
+    that property's panel (the provider list). Searching "Silver Sand
+    Beach Resort Neil" instead returns the Andaman **list** view with 81
+    hotels, the requested one first. There is no provider list on a list
+    page, so the offer extractor found nothing and the generic heuristic
+    took over and reported the Google page itself as the answer — the
+    exact "you just showed me Google" failure this is supposed to prevent.
+
+    Each card is an <h2> with the hotel name, and inside the same card an
+    anchor carrying `ts=CAEa...` — Google's entity-scoped token, where the
+    plain search's token starts `CAAa` — which is the link through to that
+    hotel's property page and its provider list."""
+    soup = BeautifulSoup(html, "html.parser")
+    cards: list[dict] = []
+    for h in soup.find_all("h2"):
+        name = h.get_text(" ", strip=True)
+        if not name or len(name) < 3:
+            continue
+        # Walk up until the container holds this card's price text.
+        node, card = h.parent, None
+        for _ in range(6):
+            if node is None:
+                break
+            text = node.get_text(" ", strip=True)
+            if "₹" in text:
+                card = node
+                break
+            node = node.parent
+        if card is None:
+            continue
+        text = card.get_text(" ", strip=True)
+        # Google's list view opens with a SPONSORED block that packs
+        # several different hotels and their prices into one container
+        # ("Sponsored · Goa hotels W Goa ₹75,520 ... Ronil Goa - JDV by
+        # Hyatt ₹23,010 ..."), so a heading inside it would be paired with
+        # some other hotel's price. A genuine card carries only its own
+        # nightly rate and stay total (3-4 ₹ at most).
+        if "sponsored" in text.lower() or text.count("₹") > 4:
+            continue
+        prices = [p for p in (_clean_price(m) for m in PRICE_RE.findall(text))
+                  if p is not None and p >= 50]
+        if not prices:
+            continue
+        link = None
+        for a in card.find_all("a", href=True):
+            if "/travel/" in a["href"] and "ts=CAEa" in a["href"]:
+                link = a["href"]
+                break
+        cards.append({
+            "name": name,
+            "price_inr": min(prices),
+            "stay_total_inr": max(prices) if max(prices) > min(prices) else None,
+            "link": link,
+        })
+    return cards
+
+
+def _find_google_property_link(html: str, place: str) -> str | None:
+    """The link through to the searched-for hotel's own Google page, from
+    a list-view result. Only the card whose heading actually names the
+    hotel — never just the first card, which on a list view is whatever
+    Google ranked highest."""
+    for card in _extract_google_hotel_cards(html):
+        if not card["link"]:
+            continue
+        if _title_matches(card["name"], place, _HOTEL_STOPWORDS, require_dominant=True):
+            return card["link"]
+    return None
+
+
+async def _google_offers_for_hotel(context, name: str, checkin: str, checkout: str,
+                                    guests: int) -> tuple[list[dict], str, bool]:
+    """Google's provider list for one named hotel: (offers, url, dates_ok).
+
+    Handles both layouts Google serves for the same query — the property
+    panel directly, or the area list view, in which case the matching card
+    is followed through. Searching by NAME rather than by a card's link is
+    deliberate: Google ships list pages whose cards carry no outbound link
+    at all (verified — zero `ts=CAEa` anchors in the live DOM even after
+    six further seconds), and a name always resolves."""
+    url = hotel_search_url("google.com/travel/hotels", name, checkin, checkout, guests)
+    page = await context.new_page()
+    try:
+        await page.goto(url, timeout=NAV_TIMEOUT_MS, wait_until="domcontentloaded")
+        try:
+            await page.wait_for_selector("text=/₹/", timeout=8000)
+        except Exception:  # noqa: BLE001
+            pass
+        await page.wait_for_timeout(700)
+        html = await page.content()
+        offers = _extract_google_hotel_offers(html)
+        if not offers:
+            link = _find_google_property_link(html, name)
+            if link:
+                url = _absolutize(link, "https://www.google.com/") or url
+                await page.goto(url, timeout=NAV_TIMEOUT_MS, wait_until="domcontentloaded")
+                try:
+                    await page.wait_for_selector("text=/₹/", timeout=8000)
+                except Exception:  # noqa: BLE001
+                    pass
+                await page.wait_for_timeout(700)
+                html = await page.content()
+                offers = _extract_google_hotel_offers(html)
+        dates_ok = await _page_confirms_dates(page, checkin, checkout)
+        return offers, url, dates_ok
+    except Exception:  # noqa: BLE001
+        return [], url, False
+    finally:
+        if not page.is_closed():
+            await page.close()
+
+
+async def _one_city_card(context, card: dict, screenshot: str, stay: str,
+                          checkin: str, checkout: str, guests: int) -> dict | None:
+    """Turn one city-list card into a real booking row: open that hotel's
+    own Google page and take its cheapest provider offer, so the link goes
+    to a booking site rather than back to Google."""
+    offers, url, dates_ok = await _google_offers_for_hotel(
+        context, card["name"], checkin, checkout, guests)
+    if not offers or not dates_ok:
+        return None
+    o = offers[0]
+    return {
+        "site": o["provider"],
+        "url": url,
+        "status": "ok",
+        "price_inr": o["price_inr"],
+        "stay_total_inr": o.get("stay_total_inr"),
+        "title": card["name"],
+        "booking_url": _absolutize(o["link"], "https://www.google.com/") or url,
+        "screenshot": screenshot,
+        "dates_accurate": True,
+        "providers_compared": len(offers),
+        "note": (f"Cheapest of {len(offers)} booking sites listed for this hotel for "
+                 f"{stay}, confirmed against the dates the page itself shows. The link "
+                 "opens the booking site directly."),
+    }
+
+
+async def _city_cards_to_offers(context, cards: list[dict], screenshot: str,
+                                 stay: str, checkin: str, checkout: str,
+                                 guests: int) -> list[dict]:
+    rows = await asyncio.gather(*[
+        _one_city_card(context, c, screenshot, stay, checkin, checkout, guests)
+        for c in cards
+    ])
+    out = [r for r in rows if r]
+    out.sort(key=lambda r: r["price_inr"])
+    return out
+
+
 async def _check_one_hotel_site(context, domain: str, place: str, checkin: str,
                                  checkout: str, guests: int, run_dir: Path) -> list[dict]:
     url = hotel_search_url(domain, place, checkin, checkout, guests)
@@ -873,6 +1039,19 @@ async def _check_one_hotel_site(context, domain: str, place: str, checkin: str,
         # product search: a search-RESULTS page's title usually just
         # echoes the query regardless of what's actually on it, which
         # would make this check circular there.
+        if "google.com/travel/hotels" in domain:
+            # Google paints its prices before it paints the links that go
+            # with them. Reading the HTML as soon as a ₹ appeared gave 18
+            # result cards and zero links out of them, so a city search
+            # found nothing to follow and reported no_match. Wait for
+            # either shape of outbound link — a provider row on a property
+            # panel, or an entity link on a list card.
+            try:
+                await page.wait_for_selector(
+                    'a[href*="/travel/lodging/clk"], a[href*="ts=CAEa"]', timeout=6000)
+            except Exception:  # noqa: BLE001
+                pass
+
         page_title = await page.title()
         html = await page.content()
         shot_path = run_dir / f"{domain.replace('.', '_').replace('/', '_')}.png"
@@ -880,8 +1059,15 @@ async def _check_one_hotel_site(context, domain: str, place: str, checkin: str,
         result["screenshot"] = f"/screenshots/{run_dir.name}/{shot_path.name}"
 
         # Ask the page itself, before reading any price off it, whether it
-        # is pricing the dates that were asked for.
+        # is pricing the dates that were asked for. Retried once: these
+        # checks run for seven sites at a time, and under that load a
+        # page's date fields can still be empty when first read — a
+        # correctly-priced site was being dropped as "wrong dates" purely
+        # on timing.
         dates_ok = await _page_confirms_dates(page, checkin, checkout)
+        if not dates_ok:
+            await page.wait_for_timeout(1500)
+            dates_ok = await _page_confirms_dates(page, checkin, checkout)
         result["dates_accurate"] = dates_ok
         stay = f"{checkin} to {checkout}"
 
@@ -891,6 +1077,69 @@ async def _check_one_hotel_site(context, domain: str, place: str, checkin: str,
         # would pull off the same page, so prefer it when present.
         if "google.com/travel/hotels" in domain:
             offers = _extract_google_hotel_offers(html)
+            hotel_title = page_title.replace(" - Google hotels", "").strip() or place
+
+            # Google answers the same search in two layouts. Some names
+            # resolve straight to the property panel (provider list);
+            # others land on the area LIST view with the hotel as one card
+            # among dozens. Confirmed live: "Silver Sand Beach Resort Neil"
+            # returned the 81-result Andaman list, where there is no
+            # provider list to read — and the generic heuristic below then
+            # reported the Google page itself as the answer. Follow the
+            # matching card through to the property page instead.
+            if not offers and _looks_like_specific_hotel(place):
+                prop_link = _find_google_property_link(html, place)
+                if prop_link:
+                    prop_url = _absolutize(prop_link, "https://www.google.com/")
+                    await page.goto(prop_url, timeout=NAV_TIMEOUT_MS,
+                                    wait_until="domcontentloaded")
+                    try:
+                        await page.wait_for_selector("text=/₹/", timeout=8000)
+                    except Exception:  # noqa: BLE001
+                        pass
+                    await page.wait_for_timeout(800)
+                    html = await page.content()
+                    await page.screenshot(path=str(shot_path), full_page=False)
+                    # The property page is a different page, so its dates
+                    # have to be re-confirmed rather than inherited.
+                    dates_ok = await _page_confirms_dates(page, checkin, checkout)
+                    result["dates_accurate"] = dates_ok
+                    url = prop_url
+                    hotel_title = (await page.title()).replace(" - Google hotels", "").strip() or place
+                    offers = _extract_google_hotel_offers(html)
+
+            # A city search has no single property, so no provider list
+            # exists at all — but its cards are still a real answer: the
+            # cheapest hotels in the area, each named and priced for these
+            # dates. That is a comparison; one row pointing at a Google
+            # search page is not, and is never returned (see CLAUDE.md).
+            if not offers:
+                cards = _extract_google_hotel_cards(html)
+                if _looks_like_specific_hotel(place):
+                    cards = [c for c in cards
+                             if _title_matches(c["name"], place, _HOTEL_STOPWORDS,
+                                               require_dominant=True)]
+                # Not gated on the list page's own date check: each card is
+                # followed to its hotel page below, which re-confirms the
+                # dates there, and that is the page the price comes from.
+                if cards:
+                    cards.sort(key=lambda c: c["price_inr"])
+                    # Each card links to that hotel's Google page, not to a
+                    # booking site — and "here's a Google link" is the thing
+                    # this tool exists to save you from. Open the cheapest
+                    # few in parallel and bring back a real provider and a
+                    # real booking link for each.
+                    return await _city_cards_to_offers(
+                        context, cards[:5], result["screenshot"], stay,
+                        checkin, checkout, guests)
+                result["status"] = "no_match"
+                result["note"] = (
+                    "Google didn't resolve this to a property with a provider list, and a "
+                    "link to a Google search page is not a price — reporting nothing "
+                    "instead. Try the hotel's full name, or its city."
+                )
+                return [result]
+
             if offers:
                 return [{
                     "site": o["provider"],
@@ -898,17 +1147,20 @@ async def _check_one_hotel_site(context, domain: str, place: str, checkin: str,
                     "status": "ok" if dates_ok else "wrong_dates",
                     "price_inr": o["price_inr"],
                     "stay_total_inr": o.get("stay_total_inr"),
-                    "title": page_title.replace(" - Google hotels", "").strip() or place,
+                    "title": hotel_title,
                     "booking_url": _absolutize(o["link"], "https://www.google.com/") or url,
                     "screenshot": result["screenshot"],
                     "dates_accurate": dates_ok,
-                    "note": (f"Google's listed price at this provider for {stay}, confirmed "
-                             "against the dates Google shows in its own check-in/check-out "
-                             "fields. Confirm taxes and cancellation on the provider's site."
+                    "providers_compared": len(offers),
+                    "note": (f"{o['provider']}'s rate for this hotel, {stay}. "
+                             + ("Link goes straight to their booking page."
+                                if not o.get("via_google_redirect")
+                                else "Link goes via Google — no direct one was published.")
+                             + " Check taxes and cancellation before booking."
                              if dates_ok else
                              "Dropped: Google did not confirm it was pricing your dates, so "
                              "this price is for some other stay."),
-                } for o in offers[:5]]
+                } for o in offers[:12]]
 
         price, link, title = _extract_top_price_and_link(
             html, url, title_hint=place, hint_stopwords=_HOTEL_STOPWORDS,
@@ -925,6 +1177,17 @@ async def _check_one_hotel_site(context, domain: str, place: str, checkin: str,
                     result["note"] = f"Couldn't confirm a listing actually naming \"{place}\" here — check the link manually."
                 else:
                     result["note"] = "No visible rate found for these dates — check the link manually."
+        elif "₹" in (title or "") or not (title or "").strip():
+            # A rate has to belong to a named property to be worth
+            # anything. On a city search Booking's nearest text is its
+            # screen-reader price string ("Original price ₹ 25,360.
+            # Current price ₹ 22,824."), which says what it costs but not
+            # what it is — unusable, and now that Google returns named
+            # hotels with provider links for city searches, it is noise on
+            # top of unusable.
+            result["status"] = "no_match"
+            result["note"] = ("Found a rate here but couldn't tell which property it "
+                              "belongs to — an unattributed price isn't an answer.")
         else:
             result["price_inr"] = price
             result["title"] = title or place
@@ -1093,7 +1356,32 @@ async def run_hotel_search(browser, place: str, checkin: str, checkout: str,
     # not a cheaper price, it's a wrong answer.
     ok = [r for r in all_results if r["status"] == "ok"]
     ok.sort(key=lambda r: r["price_inr"])
+
+    # One row per booking site. Confirmed live on Marina Bay Sands: the
+    # run returned "Booking.com ₹66,677" (from Google's panel, for that
+    # exact property) AND "booking.com ₹110,972" (this tool's own read of
+    # Booking's search page, which can land on a different room). Two
+    # prices for one site, differing by 67%, is worse than either alone.
+    # Keep the cheaper, which is also the one tied to a specific property.
+    seen_hosts: set[str] = set()
+    deduped = []
+    for r in ok:
+        host = urlparse(r.get("booking_url") or "").netloc.lower()
+        host = re.sub(r"^(www|in|deals|bookings?|hotel)\.", "", host)
+        key = host or r["site"].lower()
+        if key in seen_hosts:
+            continue
+        seen_hosts.add(key)
+        deduped.append(r)
+    ok = deduped
+
     cheapest = ok[:5]
+    # Everything else that WAS priced for these dates. Reported rather than
+    # dropped: the cheapest five were all real booking sites, but Booking
+    # .com and Agoda landed 6th and 7th and simply vanished, which reads as
+    # "you didn't check them" when in fact they were checked and are just
+    # dearer.
+    also_compared = ok[5:]
     others = [r for r in all_results if r["status"] != "ok"]
 
     now = datetime.now(timezone.utc).isoformat()
@@ -1110,5 +1398,6 @@ async def run_hotel_search(browser, place: str, checkin: str, checkout: str,
         "guests": guests,
         "checked_at": now,
         "cheapest": cheapest,
+        "also_compared": also_compared,
         "skipped": others,
     }

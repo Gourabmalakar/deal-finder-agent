@@ -43,6 +43,14 @@ its work: live screenshot, direct booking/buy link, and price history.
 | **E-commerce mode** | User gives a product URL (or a plain description). Agent identifies the product, works out its category, checks that category's top sites, and returns the **5 cheapest verified prices** with exact product-page links, screenshots, and price history. |
 | **Hotel mode** | User gives a place or hotel name, dates and guest count. Agent checks the default hotel sites and returns the **5 cheapest verified rates for those exact dates**, with booking links and screenshots. Rates the site wouldn't confirm as being for those dates are dropped and listed as skipped. |
 
+Hotel output is held to one standard: **a list of prices and booking
+links on real sites, for the exact dates entered.** Never a link to a
+Google search page — Google's panel is a source to parse (it is the only
+way to see rates from OTAs that block this tool), and what gets reported
+is each provider's own price and its own deep link, with every row
+date-confirmed on the page it came from. Anything that can't meet that is
+reported as skipped, with the reason.
+
 **The webapp does not take hotel URLs.** It was built and then withdrawn: it
 had to read the property name off a page hotel sites routinely refuse to
 serve an automated browser, and a name read off a blocked page — literally

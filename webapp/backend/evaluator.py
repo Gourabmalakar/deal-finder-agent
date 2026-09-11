@@ -30,7 +30,11 @@ PLAUSIBLE_RANGES_INR = {
     "cosmetics_beauty": (50, 15_000),
     "home_furniture": (200, 300_000),
     "general": (50, 400_000),
-    "hotel": (300, 200_000),
+    # Upper bound raised from 200k after a true negative: The Ritz London
+    # priced at ₹189k-219k a night, which is simply what the Ritz costs.
+    # This band exists to catch a filter slider read as a room rate, not to
+    # express an opinion about luxury hotels.
+    "hotel": (300, 600_000),
 }
 
 

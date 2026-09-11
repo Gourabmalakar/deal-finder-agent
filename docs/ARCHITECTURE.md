@@ -141,6 +141,20 @@ per *room type* at a single provider, so keying on the text alone once
 filled the results with "Superior Room / Deluxe Room Double / Suite" as if
 those were competing booking sites.
 
+Each organic row's `pcurl` parameter holds the provider's own deep link
+with the dates in it, so the reported link goes to booking.com or
+agoda.com rather than through Google's redirect.
+
+Google answers the same query with **two different layouts**, and both
+have to be handled: some names resolve straight to the property panel,
+others to an area list view of many hotels with no provider list at all.
+On a list view the card whose heading matches the search is followed
+through to that hotel's own page. On a city search the cheapest few cards
+are each resolved the same way, in parallel, so every row still ends at a
+booking site. If no provider list can be reached, the run reports nothing
+and says so — a link to a Google search page is never returned as an
+answer.
+
 ### The scraper's extraction approach
 
 `webapp/backend/scraper.py` opens each site's public **search results**
