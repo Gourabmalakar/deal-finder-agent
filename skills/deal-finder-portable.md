@@ -33,10 +33,10 @@ browse or search the web.
 - **Any other LLM (ChatGPT, Gemini, etc.), one-off:** paste this whole file
   as your first message, then follow it with your actual request (a product
   URL/description, or a place + dates + guest count).
-- **An LLM with no live browsing/search tool at all:** it cannot follow §5
+- **An LLM with no live browsing/search tool at all:** it cannot follow §6
   below (nothing can be verified), so it must say so plainly and offer
   unverified candidate links instead of prices — see the "No browsing tool"
-  note in §5.
+  note in §6.
 
 ---
 
@@ -121,7 +121,77 @@ and say so rather than forcing a result.
 
 ---
 
-## 4. Workflow
+## 4. Subagents this skill uses — only if your environment supports them
+
+This step is **entirely optional.** Read this section once, decide whether
+your current environment can do it, and then never think about it again for
+the rest of the run:
+
+- **Supported** means you (the model) have an actual tool for spawning a
+  separate agent/sub-task that runs its own reasoning in its own context
+  and reports back — e.g. Claude Code's/Claude's Agent (Task) tool, or an
+  equivalent "run a sub-conversation and return its answer" tool.
+- **Not supported** covers everything else — a plain chat turn with no such
+  tool, a custom GPT, most one-off pastes into another LLM. In that case,
+  **ignore this entire section** and just do every step yourself, inline,
+  in the main workflow (§5). Nothing about the rules in §0 or the checklist
+  in §7 changes — you're doing the same checks, just without splitting them
+  into a separate agent call.
+
+If supported, this skill defines two subagents, mirroring the ones the
+parent repo hard-codes as `price-scout` / `hotel-scout` and `deal-evaluator`:
+
+### Subagent: `scout`
+- **Purpose:** broad, cheap, first-pass candidate discovery. It is not the
+  final word on any price — it exists so the main flow doesn't have to
+  wade through raw search results itself before it starts verifying.
+- **Give it:** the exact product title/brand/variant (or hotel name/place),
+  the site list from §3, and — for hotels — the dates and guest count.
+- **It does:** searches (web search, or each site's own search) for the
+  specific item on each site in the list, plus a price-history site if
+  relevant, and returns one line per site: the candidate URL (or "no
+  listing found"), whatever price/rate is claimed at that stage, and any
+  obvious caveat (wrong-looking variant, third-party seller, dates that
+  don't clearly match).
+- **It must not:** open a live page, take a screenshot, or state anything
+  as a confirmed price — it has no browsing tool by design, and reporting
+  its findings as verified would defeat the reason it's kept separate.
+- **You get back:** a plain list of leads. Every one of them still goes
+  through §5 Step 3 (verify live) before it can appear in a report.
+- **Why bother, if the main flow could search directly:** keeping this
+  noisy, unverified first pass in its own context means it can't quietly
+  blend into the verified facts you build the final report from — when the
+  main flow does its own searching in the same context it later reports
+  from, a claimed price and a confirmed price are one context-scroll apart
+  and easier to conflate under time pressure.
+
+### Subagent: `evaluator`
+- **Purpose:** an independent grade on a finished report, by a context that
+  did not produce it.
+- **Give it:** the compiled report (ranked table, skipped sites, caveats)
+  and the raw `scout` leads it was built from.
+- **It does:** checks the report against every item in the §7 checklist —
+  including judgment calls a fixed rule can't make well, like "is this
+  genuinely the same variant/property, not just a similarly-named one?" —
+  and returns a verdict: pass, or a specific list of failures with reasons.
+- **It must not:** rewrite the report, re-run a search, or fix a bad row
+  itself — only judge and report back.
+- **You do:** wait for its verdict before presenting anything. If it flags
+  a failure, fix what you can (drop the bad row, re-verify that one site,
+  add a missing caveat) and, if useful, send it back once more — don't
+  present a report you already know failed a check.
+- **Why bother, if the main flow could just re-read its own checklist:** a
+  second, independent pass is more likely to catch a mistake the first
+  pass is blind to precisely because it made that mistake — the same
+  reasoning grading its own homework tends to repeat its own blind spots.
+
+If your environment can spawn one subagent but you're only going to use
+one of the two, prefer `evaluator` — catching a bad report before it's
+shown matters more than where the leads came from.
+
+---
+
+## 5. Workflow
 
 ### Step 1 — Identify the target
 - Product URL given: open it, extract exact title/brand/variant — this is
@@ -132,23 +202,12 @@ and say so rather than forcing a result.
   given — these do not get "interpreted," only matched exactly.
 
 ### Step 2 — Find candidates on each site
-For each site in the relevant list: search (web search, or the site's own
-search) for the specific product/hotel — not the site's homepage or a
-category page. Note the candidate URL and whatever price/rate is claimed
-at this stage. Treat this as a **lead**, not a confirmed number, until
-step 3.
-
-**If your environment can spawn a subagent/sub-task** (e.g. Claude Code's
-Agent tool, elsewhere than the parent repo): do this step as one, in a
-subagent given the product/hotel details and site list, instructed to
-return leads only — never a confirmed price — and nothing else. Running
-discovery in a separate context, rather than in the same thread that will
-later verify and report, is what the parent repo's `price-scout`/
-`hotel-scout` subagents are for: it keeps raw, unverified search noise from
-blending into the verified facts the report is built from. If no such tool
-exists, do step 2 yourself in the main flow — the verify-before-report
-discipline in step 3 is what actually prevents a bad price, this split is
-a second layer of safety on top of it, not a substitute for it.
+Run the `scout` subagent from §4 if your environment supports one. If not,
+do this yourself: for each site in the relevant list, search (web search,
+or the site's own search) for the specific product/hotel — not the site's
+homepage or a category page. Either way, note the candidate URL and
+whatever price/rate is claimed at this stage, and treat every one of them
+as a **lead**, not a confirmed number, until step 3.
 
 ### Step 3 — Verify live, with proof
 For each candidate (aim for 5 confirmed results):
@@ -177,26 +236,19 @@ present a search-result snippet's number as a confirmed price.
 - Sort confirmed results ascending by price (product) or total stay price
   (hotel). Keep the cheapest 5 — fewer is fine if fewer were confirmed;
   never pad with a guess to reach 5.
-- Use the report format in §5.
+- Use the report format in §6.
 
 ### Step 5 — Self-check before presenting
-Run the checklist in §6 against your own output before showing it. Fix
-what you can (drop a bad row, re-verify, add a missing caveat) rather than
-presenting something you can see fails a check.
-
-**If your environment can spawn a subagent/sub-task:** hand the compiled
-report (and the raw step-2 leads) to a fresh subagent instructed to grade
-it against §6 independently, and wait for its verdict before presenting.
-This is what the parent repo's `deal-evaluator` subagent is for — a second
-pass, in a context that didn't produce the report, is more likely to catch
-a mistake (a subtle variant mismatch, a plausible-looking but wrong price)
-than the same reasoning that wrote the report grading itself. Without that
-tool, doing the self-check yourself is still required — it's the weaker
-version of this step, not an optional extra.
+Run the `evaluator` subagent from §4 if your environment supports one,
+handing it the report and the step-2 leads, and wait for its verdict. If
+not, run the checklist in §7 against your own output yourself. Either way,
+fix what you can (drop a bad row, re-verify, add a missing caveat) rather
+than presenting something you can see — or that the evaluator flagged —
+fails a check.
 
 ---
 
-## 5. Output format
+## 6. Output format
 
 **Lead-in:** one line stating what was searched (product name/variant, or
 hotel + exact dates + guests) and when it was checked.
@@ -220,7 +272,8 @@ hotel pricing.
 
 ---
 
-## 6. Self-check before presenting (inline evaluator)
+## 7. Self-check checklist (what the `evaluator` subagent grades against —
+## or what you check yourself, if none was used)
 
 - [ ] **has_proof** — every reported price traces to a page actually opened
       this session (screenshot, or a quoted read of it), not a remembered
@@ -243,14 +296,13 @@ hotel pricing.
 
 ---
 
-## 7. Relationship to the parent repo
+## 8. Relationship to the parent repo
 
 If you're running inside the `deal-finder-agent` repo itself, the two
 purpose-built skills (`.claude/skills/ecommerce-deal-finder/SKILL.md`,
 `.claude/skills/hotel-deal-finder/SKILL.md`) are the more thorough path —
-they split broad discovery (`price-scout`/`hotel-scout` subagents) from
-live verification (main session), log every result to
-`data/price_history.csv`, and hand off to the `deal-evaluator` subagent
-for an independent pass against `evals/criteria.yaml`. Use this file when
-you want the same rules and workflow somewhere that repo's subagents and
-data files don't exist.
+they always use the `price-scout`/`hotel-scout` and `deal-evaluator`
+subagents (§4 describes the same roles in portable form), log every result
+to `data/price_history.csv`, and grade against `evals/criteria.yaml`
+directly. Use this file when you want the same rules and workflow
+somewhere that repo's subagents and data files don't exist.
