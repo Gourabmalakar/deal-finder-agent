@@ -143,6 +143,15 @@ search from scratch.
 
 Registered in `.claude/settings.json`.
 
+### Portable version
+
+[`skills/deal-finder-portable.md`](skills/deal-finder-portable.md) packages
+the same rules and workflow as the two skills above into one file with no
+dependency on this repo's subagents or data files (site lists and the
+self-check are inlined). Use it to run this outside this repo — copy it
+into another project's `.claude/skills/`, a Claude Project's custom
+instructions, or paste it as the first message to any other LLM.
+
 ### Slash commands — `.claude/commands/`
 
 | Command | Does |

@@ -91,6 +91,17 @@ See [`CLAUDE.md`](CLAUDE.md) §2 for why the scout subagents don't take
 screenshots themselves (they don't have a live browser — only the main
 session's Browser tool does).
 
+## Use this outside this repo, or with another LLM
+
+[`skills/deal-finder-portable.md`](skills/deal-finder-portable.md) is a
+single self-contained file with the same rules, site lists, and workflow as
+the two skills above, but with no dependency on this repo's subagents or
+data files. Copy it into another project's `.claude/skills/`, paste it into
+a Claude Project's custom instructions, or paste it as the first message to
+any other LLM that can browse or search the web — it explains itself and
+degrades gracefully (clearly-labeled unverified leads instead of confirmed
+prices) if the tool it's running in can't open live pages.
+
 ## Local test webapp
 
 `webapp/` is a real, runnable web app version — a FastAPI backend that
@@ -133,6 +144,7 @@ data/evals.db                    shared SQLite eval log (webapp writes, deal-eva
 .claude/agents/                  price-scout, hotel-scout, deal-evaluator
 .claude/hooks/                   intent-detection hook
 .claude/commands/                /find-deal, /find-hotel, /review-evals
+skills/deal-finder-portable.md   standalone version for other projects/LLMs, no repo dependency
 runs/                            scratch space for screenshots (gitignored)
 webapp/                          local FastAPI + Playwright webapp — see webapp/README.md
 render.yaml, webapp/Dockerfile   hosting config (Render)
