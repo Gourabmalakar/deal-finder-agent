@@ -138,6 +138,18 @@ category page. Note the candidate URL and whatever price/rate is claimed
 at this stage. Treat this as a **lead**, not a confirmed number, until
 step 3.
 
+**If your environment can spawn a subagent/sub-task** (e.g. Claude Code's
+Agent tool, elsewhere than the parent repo): do this step as one, in a
+subagent given the product/hotel details and site list, instructed to
+return leads only — never a confirmed price — and nothing else. Running
+discovery in a separate context, rather than in the same thread that will
+later verify and report, is what the parent repo's `price-scout`/
+`hotel-scout` subagents are for: it keeps raw, unverified search noise from
+blending into the verified facts the report is built from. If no such tool
+exists, do step 2 yourself in the main flow — the verify-before-report
+discipline in step 3 is what actually prevents a bad price, this split is
+a second layer of safety on top of it, not a substitute for it.
+
 ### Step 3 — Verify live, with proof
 For each candidate (aim for 5 confirmed results):
 - Open the exact page with a live browsing tool.
@@ -165,12 +177,22 @@ present a search-result snippet's number as a confirmed price.
 - Sort confirmed results ascending by price (product) or total stay price
   (hotel). Keep the cheapest 5 — fewer is fine if fewer were confirmed;
   never pad with a guess to reach 5.
-- Use the report format in §6.
+- Use the report format in §5.
 
 ### Step 5 — Self-check before presenting
-Run the checklist in §7 against your own output before showing it. Fix
+Run the checklist in §6 against your own output before showing it. Fix
 what you can (drop a bad row, re-verify, add a missing caveat) rather than
 presenting something you can see fails a check.
+
+**If your environment can spawn a subagent/sub-task:** hand the compiled
+report (and the raw step-2 leads) to a fresh subagent instructed to grade
+it against §6 independently, and wait for its verdict before presenting.
+This is what the parent repo's `deal-evaluator` subagent is for — a second
+pass, in a context that didn't produce the report, is more likely to catch
+a mistake (a subtle variant mismatch, a plausible-looking but wrong price)
+than the same reasoning that wrote the report grading itself. Without that
+tool, doing the self-check yourself is still required — it's the weaker
+version of this step, not an optional extra.
 
 ---
 
